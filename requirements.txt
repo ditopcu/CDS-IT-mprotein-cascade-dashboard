@@ -1,0 +1,21 @@
+# IFE M-Protein CDS Dashboard — Dependencies
+# Install: pip install -r requirements.txt
+
+# ── Core ──
+streamlit>=1.38.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# ── Visualization ──
+matplotlib>=3.7.0
+plotly>=5.18.0
+
+# ── PDF Export ──
+reportlab>=4.0.0
+
+# ── Excel (reflex rules) ──
+openpyxl>=3.1.0
+
+# ── LLM Integration (optional — app works without these) ──
+httpx>=0.25.0
+# Alternative: requests>=2.31.0 (used as fallback if httpx unavailable)

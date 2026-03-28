@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+data/*.pkl
+data/*.xlsx
+results/*.pkl
+.streamlit/secrets.toml
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+debug.py
+*_OLD.pkl
+*_backup.pkl
