@@ -6,21 +6,23 @@ import os
 import numpy as np
 import pandas as pd
 import streamlit as st
-from config import DATA_DIR, RES_DIR, D9, ZONE_THRESHOLDS
+from config import (DATA_DIR, RES_DIR, D9, ZONE_THRESHOLDS,
+                    DATASET_FILE, FEATURE_DICT, FLOWDF_FILE,
+                    SHAP_FILE, EXTVAL_FILE)
 
 
 @st.cache_resource
 def load_all_data():
     """Return (ds, shap_d, feat_dict, master_df)."""
-    with open(DATA_DIR / 'dataset.pkl', 'rb') as f:
+    with open(DATASET_FILE, 'rb') as f:
         ds = pickle.load(f)
-    with open(RES_DIR / 'L4_shap_dense_full.pkl', 'rb') as f:
+    with open(SHAP_FILE, 'rb') as f:
         shap_d = pickle.load(f)
-    with open(DATA_DIR / 'feature_dictionary.pkl', 'rb') as f:
+    with open(FEATURE_DICT, 'rb') as f:
         feat_dict = pickle.load(f)
 
     # ── Internal data ──────────────────────────────────
-    with open(RES_DIR / 'flow_df.pkl', 'rb') as f:
+    with open(FLOWDF_FILE, 'rb') as f:
         raw = pickle.load(f)
     if isinstance(raw, pd.DataFrame):
         df_int = raw.copy()
@@ -36,7 +38,7 @@ def load_all_data():
     df_int['patient_id'] = [str(ds['sample_ids'][i]) for i in df_int.index]
 
     # ── External data ──────────────────────────────────
-    with open(RES_DIR / 'L4_ext_validation_results.pkl', 'rb') as f:
+    with open(EXTVAL_FILE, 'rb') as f:
         ext = pickle.load(f)
 
     ext_pred_class = [D9.get(p, str(p)) for p in ext['ext_pred']]
@@ -249,6 +251,3 @@ def load_reflex_rules(xlsx_path="data/reflex_matrix.xlsx", uploaded_file=None):
     except Exception as e:
         st.warning(f"Error parsing Excel sheets: {e}. Falling back to defaults.")
         return UNIVERSAL_BASELINE, REFLEX_MATRIX, "⚠️ Hardcoded defaults (Excel parse error)"
-
-
-import os  # eğer yoksa üste ekle

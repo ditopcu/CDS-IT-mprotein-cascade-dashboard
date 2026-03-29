@@ -1,16 +1,29 @@
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
 .venv/
-venv/
-data/*.pkl
-data/*.xlsx
-results/*.pkl
-.streamlit/secrets.toml
+*.egg-info/
+
+# IDE
 .idea/
 .vscode/
 *.swp
+*.swo
+
+# OS
 .DS_Store
 Thumbs.db
-debug.py
-*_OLD.pkl
-*_backup.pkl
+
+# Full patient data (never commit)
+data/dataset.pkl
+results/flow_df.pkl
+results/ext_flow_df.pkl
+results/L4_shap_dense_full.pkl
+results/L4_ext_validation_results.pkl
+
+# Demo files are allowed (anonymized, small) — no exclusion rule
+
+# Local dev artifacts
+demo_selection_report.csv
+*.log

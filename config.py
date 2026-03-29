@@ -2,11 +2,25 @@
 config.py – Central configuration for the IFE M-Protein CDS Dashboard.
 All constants, color palettes, label maps, and layout settings live here.
 """
+import os
 from pathlib import Path
+
+# ─── Demo mode toggle ────────────────────────────────────
+# Default: True (Streamlit Cloud uses demo data out of the box)
+# Local with full data: set DEMO_MODE=false in environment
+DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() == "true"
 
 # ─── Paths ───────────────────────────────────────────────
 DATA_DIR = Path("data")
 RES_DIR  = Path("results")
+
+_SUFFIX = "_demo" if DEMO_MODE else ""
+
+DATASET_FILE   = DATA_DIR / f"dataset{_SUFFIX}.pkl"
+FEATURE_DICT   = DATA_DIR / "feature_dictionary.pkl"       # no demo variant
+FLOWDF_FILE    = RES_DIR  / f"flow_df{_SUFFIX}.pkl"
+SHAP_FILE      = RES_DIR  / f"L4_shap_dense_full{_SUFFIX}.pkl"
+EXTVAL_FILE    = RES_DIR  / f"L4_ext_validation_results{_SUFFIX}.pkl"
 
 # ─── 9-class label map ───────────────────────────────────
 D9 = {
