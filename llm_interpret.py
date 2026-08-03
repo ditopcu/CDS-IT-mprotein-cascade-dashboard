@@ -156,7 +156,7 @@ def generate_interpretation(row, cp_set, shap_l1, shap_l2, shap_l3, feat_dict, m
     """
     api_key = _resolve_api_key()
     prompt = build_prompt(row, cp_set, shap_l1, shap_l2, shap_l3, feat_dict, mode)
-    meta = {"prompt": prompt, "model": "claude-sonnet-4-20250514",
+    meta = {"prompt": prompt, "model": "claude-sonnet-5",
             "input_tokens": None, "output_tokens": None,
             "latency_ms": None, "cache_hit": False}
 
@@ -179,6 +179,9 @@ def generate_interpretation(row, cp_set, shap_l1, shap_l2, shap_l3, feat_dict, m
     payload = {
         "model": meta["model"],
         "max_tokens": 512,
+        # Sonnet 5 runs adaptive thinking by default; disable it so the 512-token
+        # budget goes entirely to the answer (and content[0] is the text block).
+        "thinking": {"type": "disabled"},
         "messages": [{"role": "user", "content": prompt}],
     }
     headers = {

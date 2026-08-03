@@ -5,6 +5,7 @@ app.py – IFE M-Protein Clinical Decision Support Dashboard
   Layer 2: Evidence (SHAP waterfalls + explanations)
   Layer 3: Deep Dive (spatial SHAP, interactive charts)
 """
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -23,6 +24,7 @@ from plotting import (
     render_conformal_set_html,
 )
 from pdf_export import create_pdf
+import inference as inf
 from llm_interpret import (
     render_api_key_sidebar, render_interpretation_section,
     build_prompt, is_available, generate_template_interpretation,
@@ -81,7 +83,10 @@ with st.sidebar:
     st.divider()
 
     st.subheader("Scenario Explorer")
-    f_source = st.selectbox("Data Source", ["ALL", "Internal", "External"])
+    _sources = ["ALL", "Internal", "External"]
+    if (master_df['source'] == 'Alicante').any():
+        _sources.append("Alicante")
+    f_source = st.selectbox("Data Source", _sources)
     f_type   = st.selectbox("M-Protein Type", ["ALL"] + sorted(master_df['pred_class'].unique().tolist()))
     f_zone   = st.selectbox("Confidence Zone", ["ALL", "HIGH", "MEDIUM", "LOW"])
     f_res    = st.selectbox("Result", ["ALL", "Correct", "Incorrect"])
@@ -103,11 +108,13 @@ with st.sidebar:
         subset = subset.drop(columns=['_cp_size'])
 
     if req_shap and f_type != "NEGATIVE":
-        valid_int = set(shap_d.get('L2', {}).get('sample_indices', []))
-        valid_ext = set(shap_d.get('L2_external', {}).get('sample_indices', []))
+        valid_int  = set(shap_d.get('L2', {}).get('sample_indices', []))
+        valid_ext  = set(shap_d.get('L2_external', {}).get('sample_indices', []))
+        valid_alic = set(shap_d.get('L2_alicante', {}).get('sample_indices', []))
         subset = subset[
             ((subset['source'] == 'Internal') & (subset['sig_idx'].isin(valid_int))) |
-            ((subset['source'] == 'External') & (subset['sig_idx'].isin(valid_ext)))
+            ((subset['source'] == 'External') & (subset['sig_idx'].isin(valid_ext)))  |
+            ((subset['source'] == 'Alicante') & (subset['sig_idx'].isin(valid_alic)))
         ]
 
     st.success(f"Found **{len(subset)}** matches.")
@@ -153,6 +160,110 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════
 #  MAIN PANEL
 # ═══════════════════════════════════════════════════════════
+def _render_upload_section(feat_dict):
+    """Reviewer M4: upload anonymized signals → run the FROZEN cascade → same outputs."""
+    st.markdown(
+        "Upload your own **anonymized** capillary immunotyping signals to evaluate the "
+        "frozen model on external data — the reviewer-requested independent-validation path.")
+    st.info(
+        "🔒 **Data handling.** Upload a de-identified **Excel** signal file only. It is processed "
+        "**transiently in memory** to run inference and is **not stored, not logged, and not used for "
+        "training**. Only the four signal columns are read — any other column or header field is "
+        "ignored and never processed. The deployed model is **frozen and versioned** "
+        "(5-fold XGBoost-Peak-Optuna ensemble; forward inference only)."
+        "\n\n*(Raw Sebia `.mdb` exports are intentionally not accepted — they can embed patient "
+        "identifiers. Export the anonymized long-format table below instead.)*")
+    st.caption(
+        "**Format — long-format Excel (.xlsx):** columns `sample_id, curve_name, x, y`. "
+        "Per sample: exactly **6 curves** (ELP, IgG, IgA, IgM, Kappa, Lambda) × **300 points** "
+        "(`x` = 0…299). One row per (curve, point). Multiple samples per file are allowed.")
+
+    import io
+    _tmpl = inf.example_signal_df()
+    _buf = io.BytesIO(); _tmpl.to_excel(_buf, index=False, sheet_name="signals")
+    st.download_button("📄 Download example template (.xlsx)", _buf.getvalue(),
+                       file_name="cds_upload_template.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       help="One fully-filled example sample (EXAMPLE_001) showing the exact format.")
+
+    up = st.file_uploader("De-identified signal Excel (.xlsx)", type=["xlsx", "xls"],
+                          key="_ext_upload_file")
+    if up is None:
+        return
+    sig_key = f"{up.name}:{up.size}"
+    cache = st.session_state.setdefault("_upload_cache", {})
+    if sig_key not in cache:
+        try:
+            X, ids = inf.parse_long_format_excel(up)   # validates cols, 6 curves, 300 pts, numeric y
+        except inf.UploadError as e:
+            st.error(f"❌ Upload rejected (validation): {e}")
+            return
+        except Exception as e:
+            st.error(f"❌ Could not process the file: {e}")
+            return
+        st.caption(f"✓ Validated: {len(ids)} sample(s), 6 curves × 300 points each, numeric signals.")
+        with st.spinner(f"Running the frozen cascade on {len(ids)} sample(s)…"):
+            try:
+                results, _ = inf.run_frozen_cascade(X, inf.CONFORMAL_PROB_THR_DEFAULT, with_shap=True)
+            except Exception as e:
+                st.error(f"❌ Inference failed: {e}")
+                return
+        cache[sig_key] = {"ids": ids, "X": X, "results": results}
+    data = cache[sig_key]
+    ids, X, results = data["ids"], data["X"], data["results"]
+    st.success(f"✅ {len(ids)} sample(s) evaluated with the frozen model.")
+
+    # summary table + download
+    summ = pd.DataFrame([{
+        "sample_id": ids[i], "prediction": pretty(r["pred_class"]),
+        "confidence": round(r["confidence"], 3), "zone": r["zone"],
+        "conformal_set": " ; ".join(pretty(c) for c in r["conformal_set"]),
+        "set_size": r["conformal_set_size"],
+        "action": "Requires expert review" if r["review_required"] else "Auto-verify",
+    } for i, r in enumerate(results)])
+    st.dataframe(summ, use_container_width=True, hide_index=True)
+    st.download_button("📥 Download results (CSV)", summ.to_csv(index=False).encode(),
+                       file_name="cds_upload_results.csv", mime="text/csv")
+
+    sel = st.selectbox("Inspect sample", list(range(len(ids))),
+                       format_func=lambda i: f"{ids[i]} — {pretty(results[i]['pred_class'])}",
+                       key="_ext_upload_sel")
+    r = results[sel]
+    a, b, c = st.columns([1, 1, 1.2])
+    with a:
+        st.metric("Prediction", pretty(r["pred_class"]))
+        st.caption(f"L1 p={r['l1_proba']:.3f}")
+    with b:
+        st.metric("Confidence zone", r["zone"], f"conf {r['confidence']:.3f}")
+    with c:
+        st.markdown("**Conformal set** " + " ".join(f"`{pretty(x)}`" for x in r["conformal_set"]))
+        if r["review_required"]:
+            st.warning(f"Set = {r['conformal_set_size']} → requires expert review")
+        else:
+            st.success("Singleton → auto-verify")
+
+    st.plotly_chart(plotly_signal_faceted(X[sel], title=f"Signal — {ids[sel]}"),
+                    use_container_width=True)
+
+    if r.get("shap"):
+        with st.expander("Model decision support (SHAP top features)", expanded=False):
+            st.info("⚠ SHAP attributions are **regional** (fixed β1/β2/β2–γ/γ windows from an "
+                    "averaged training tracing), not exact peak coordinates.")
+            for lv in ("L1", "L2", "L3"):
+                sd = r["shap"].get(lv)
+                st.markdown(f"**{lv}**")
+                if not isinstance(sd, list):
+                    st.caption("Not evaluated at this level."); continue
+                st.plotly_chart(plotly_shap_waterfall(sd, lv), use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════
+#  EXTERNAL UPLOAD (Reviewer M4) — always available, patient-independent
+# ═══════════════════════════════════════════════════════════
+with st.expander("📤 Upload external data for independent model evaluation (Reviewer M4)",
+                 expanded=False):
+    _render_upload_section(feat_dict)
+
 target_id = search_id if search_id else st.session_state.get('active_id')
 if not target_id:
     st.info("Search for a patient or use the Scenario Explorer to begin.")
@@ -165,6 +276,7 @@ try:
         row = row.iloc[0]
 
     is_ext  = row['source'] == 'External'
+    shap_suffix = {'External': '_external', 'Alicante': '_alicante'}.get(row['source'], '')
     sig_idx = row['sig_idx']
     signal  = get_patient_signal(ds, row)
     disp_id = "XXXX" + idx_str[4:] if mask_id else idx_str
@@ -187,12 +299,14 @@ try:
 
     cp_set   = build_conformal_set(row)
     set_size = len(cp_set)
-    cp_action = "Auto-reportable" if set_size == 1 else "Manual review"
+    # Operating rule (Task 2): conformal set size ≥ 2 ⇒ requires expert review (not auto-verified).
+    review_required = set_size >= 2
+    cp_action = "Auto-verify" if set_size == 1 else "Requires expert review"
 
     # ── SHAP ──
-    shap_l1 = get_patient_shap(shap_d, 'L1', sig_idx, is_ext)
-    shap_l2 = get_patient_shap(shap_d, 'L2', sig_idx, is_ext)
-    shap_l3 = get_patient_shap(shap_d, 'L3', sig_idx, is_ext)
+    shap_l1 = get_patient_shap(shap_d, 'L1', sig_idx, shap_suffix)
+    shap_l2 = get_patient_shap(shap_d, 'L2', sig_idx, shap_suffix)
+    shap_l3 = get_patient_shap(shap_d, 'L3', sig_idx, shap_suffix)
 
     # ── Base values ──
     def _get_base(level_key):
@@ -209,9 +323,9 @@ try:
         return shap_d.get('base_values', {}).get(level_key, None)
 
     base_vals = {
-        'L1': _get_base('L1_external' if is_ext else 'L1'),
-        'L2': _get_base('L2_external' if is_ext else 'L2'),
-        'L3': _get_base('L3_external' if is_ext else 'L3'),
+        'L1': _get_base('L1' + shap_suffix),
+        'L2': _get_base('L2' + shap_suffix),
+        'L3': _get_base('L3' + shap_suffix),
     }
 
     # ── Reflex ──
@@ -246,16 +360,35 @@ try:
     # ─────────────────────────────────────────────────
     with tab_report:
 
+        st.caption(
+            "Model: **frozen cascade, 5-fold ensemble** (per-level probability averaging) — "
+            "not a single refit model. Reference standard = **expert CZE-IT interpretation**; "
+            "performance is reported as **agreement with expert CZE-IT interpretation**, not "
+            "diagnostic accuracy against an independent biochemical gold standard.")
+
         # ── 1-4: Executive Summary (single row) ──
         c1, c2, c3, c4 = st.columns([1.2, 1, 0.8, 1.4])
 
         with c1:
+            gt_html = ""
+            if llm_mode == MODE_RESEARCH:
+                _ok = row['correct'] == 1
+                _gt_col = "#1A9641" if _ok else "#D73027"
+                _mark = "✓ correct" if _ok else "✗ incorrect"
+                gt_html = (
+                    f"<div style='margin-top:5px; padding:3px 8px; border-radius:4px; "
+                    f"background:{_gt_col}1A; border-left:3px solid {_gt_col};'>"
+                    f"<span style='font-size:10px; color:#888; font-weight:600;'>GROUND TRUTH</span><br>"
+                    f"<span style='font-size:18px; font-weight:bold; color:{_gt_col};'>{pretty(row['true_class'])}</span> "
+                    f"<span style='font-size:12px; font-weight:600; color:{_gt_col};'>{_mark}</span></div>"
+                )
             st.markdown(
                 f"<div>"
                 f"<span style='font-size:11px; color:#888; font-weight:600;'>1. CLASSIFICATION</span><br>"
                 f"<span style='font-size:32px; font-weight:bold; color:#222; line-height:1.1;'>{pretty(row['pred_class'])}</span>"
                 f"</div>"
-                f"<div style='font-size:11px; color:#555; line-height:1.5;'>"
+                f"{gt_html}"
+                f"<div style='font-size:11px; color:#555; line-height:1.5; margin-top:5px;'>"
                 f"L1: p={p1}<br>L2: p={p2}<br>L3: p={p3}<br>"
                 f"<b>Conf: {row['confidence']:.4f}</b></div>",
                 unsafe_allow_html=True,
@@ -263,10 +396,16 @@ try:
 
         with c2:
             st.markdown(
-                "<span style='font-size:11px; color:#888; font-weight:600;'>2. CONFORMAL SET</span>",
+                "<span style='font-size:11px; color:#888; font-weight:600;'>2. CONFORMAL SET "
+                f"<span style='color:#555;'>(n={set_size})</span></span>",
                 unsafe_allow_html=True,
             )
             st.markdown(render_conformal_set_html(cp_set, row['pred_class'], row['zone']), unsafe_allow_html=True)
+            if review_required:
+                st.markdown(
+                    "<div style='margin-top:3px; padding:2px 7px; border-radius:4px; background:#FDECEA; "
+                    "border-left:3px solid #D7503A; font-size:11px; color:#8B2A1E; font-weight:600;'>"
+                    "⚠ Set ≥ 2 → requires expert review</div>", unsafe_allow_html=True)
 
         with c3:
             zone_col = ZONE_COLORS.get(row['zone'], '#000')
@@ -276,6 +415,7 @@ try:
                 unsafe_allow_html=True,
             )
             (st.success if set_size == 1 else st.warning)(f"{set_size}-class — {cp_action}")
+            st.caption("Zone = compound confidence (calibrated); routing decision follows the conformal set size.")
 
         with c4:
             ife_colors = {"Not required": "#1A9641", "Consider": "#F46D43", "Recommended": "#E65100", "Mandatory": "#D73027"}
@@ -356,8 +496,13 @@ try:
         # ── Deep Dive Expanders ──
         with st.expander("🔬 6-Channel Spatial SHAP Overlay", expanded=False):
             st.caption("Red = pushes toward class, blue = pushes against.")
+            st.info(
+                "⚠ **Attributions are REGIONAL, not exact peak coordinates.** The 399 features use "
+                "**fixed** electrophoretic region windows (β1 / β2 / β2–γ transition / γ) taken from an "
+                "**averaged** training tracing — not per-sample peak detection. Read the overlay at the "
+                "level of these zones, not individual x-positions.")
             for lv, lv_label in [('L1', 'L1: Binary'), ('L2', 'L2: Heavy'), ('L3', 'L3: Light')]:
-                full = get_patient_shap_full(shap_d, lv, sig_idx, is_ext)
+                full = get_patient_shap_full(shap_d, lv, sig_idx, shap_suffix)
                 if full is None:
                     st.caption(f"{lv_label}: not available"); continue
                 fn, sv, xv = full
@@ -448,7 +593,7 @@ try:
         with d2:
             st.markdown("#### SHAP Coverage")
             for level, label in [('L1', 'L1'), ('L2', 'L2'), ('L3', 'L3')]:
-                key_used = f"{level}_external" if is_ext else level
+                key_used = f"{level}{shap_suffix}"
                 has_key = key_used in shap_d
                 in_index = False
                 if has_key:

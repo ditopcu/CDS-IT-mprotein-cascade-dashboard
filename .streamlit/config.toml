@@ -1,0 +1,9 @@
+# Force a LIGHT theme regardless of the OS/browser dark mode.
+# The app's inline HTML/CSS hardcodes light-assuming colors (#222, #555, #888,
+# #FFF8E1, …); on a dark OLED theme those low-contrast grays become unreadable.
+# Pinning base="light" gives a white background so all inline styling reads correctly.
+[theme]
+base = "light"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F5"
+textColor = "#1A1A1A"

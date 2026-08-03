@@ -22,6 +22,12 @@ FLOWDF_FILE    = RES_DIR  / f"flow_df{_SUFFIX}.pkl"
 SHAP_FILE      = RES_DIR  / f"L4_shap_dense_full{_SUFFIX}.pkl"
 EXTVAL_FILE    = RES_DIR  / f"L4_ext_validation_results{_SUFFIX}.pkl"
 
+# ─── Alicante external cohort (optional; loaded if present) ───────────────
+# No demo variant — always the same files. See alicante_validation/.
+ALIC_DATASET_FILE = DATA_DIR / "dataset_alicante.pkl"      # X_alic_3d, alic_sample_ids, y_alic_class9
+ALIC_FLOWDF_FILE  = RES_DIR  / "alic_flow_df.pkl"
+ALIC_SHAP_FILE    = RES_DIR  / "L4_shap_dense_alicante.pkl"
+
 # ─── 9-class label map ───────────────────────────────────
 D9 = {
     0: 'NEGATIVE',   1: 'IGG_KAPPA',  2: 'IGG_LAMBDA',
@@ -68,6 +74,15 @@ ZONE_THRESHOLDS = {'HIGH': 0.70, 'MEDIUM': 0.30}  # >= threshold
 # ─── SHAP color palette ─────────────────────────────────
 SHAP_POS_COLOR = '#B2182B'
 SHAP_NEG_COLOR = '#2166AC'
+
+# ─── Cascade decision constants (paper-consistent; FROZEN) ───────────────
+# L1 threshold τ = XGBoost-Peak-Optuna Youden on training OOF (sens 0.837 / spec 0.950),
+# reported as 0.47. The 0.47147757 previously floating around was a stale MiniRocket leftover.
+L1_THRESHOLD = 0.47219881415367126
+# Split-conformal probability threshold = 1 − q_hat (LAC score 1−p_true, α=0.05,
+# calibrated on the CLEAN external cohort, seed 42 / 70% → q_hat 0.8165). Prediction set
+# = { class j : P9[j] ≥ CONFORMAL_PROB_THR }. Set size ≥ 2 ⇒ requires expert review.
+CONFORMAL_PROB_THR = 0.1835
 
 # ─── Conformal prediction defaults ───────────────────────
 CP_ALPHA = 0.05

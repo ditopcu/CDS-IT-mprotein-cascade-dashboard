@@ -24,6 +24,26 @@ results/L4_ext_validation_results.pkl
 
 # Demo files are allowed (anonymized, small) — no exclusion rule
 
+# Frozen cascade models (downloaded from Google Drive; large, non-patient)
+models_frozen/
+
+# Alicante external cohort — raw patient data + derived (never commit)
+data/data_alicante/
+
 # Local dev artifacts
 demo_selection_report.csv
 *.log
+
+# Downloaded internal OOF probabilities (model-derived)
+oof_internal/
+
+# Alicante derived model artifacts (patient-derived signals/predictions/SHAP — NEVER commit)
+data/dataset_alicante.pkl
+results/alic_flow_df.pkl
+results/L4_shap_dense_alicante.pkl
+
+# Paper-revision workspace: 79 patient cases, clinician annotations, reviewer docs — NOT public
+revision/
+
+# Plaintext API key — NEVER commit (rotate the key)
+api.txt

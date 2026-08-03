@@ -8,7 +8,16 @@ import pandas as pd
 import streamlit as st
 from config import (DATA_DIR, RES_DIR, D9, ZONE_THRESHOLDS,
                     DATASET_FILE, FEATURE_DICT, FLOWDF_FILE,
-                    SHAP_FILE, EXTVAL_FILE)
+                    SHAP_FILE, EXTVAL_FILE,
+                    ALIC_DATASET_FILE, ALIC_FLOWDF_FILE, ALIC_SHAP_FILE,
+                    L1_THRESHOLD, CONFORMAL_PROB_THR)
+import inference as inf
+
+# source name → SHAP-dict key suffix
+SRC_SUFFIX = {'Internal': '', 'External': '_external', 'Alicante': '_alicante'}
+
+# internal OOF probabilities for the split-conformal set (paper's out-of-fold preds)
+_OOF_DIRS = [os.path.join("revision", "repor"), "oof_internal"]
 
 
 @st.cache_resource
@@ -36,6 +45,9 @@ def load_all_data():
     df_int['source']     = 'Internal'
     df_int['sig_idx']    = df_int.index
     df_int['patient_id'] = [str(ds['sample_ids'][i]) for i in df_int.index]
+    # Internal confidence/zone are the paper's isotonic-calibrated values already in
+    # flow_df (HIGH 62.2%) — keep them. Only add the split-conformal set (from OOF P9).
+    df_int['conformal_set'] = _internal_conformal_sets(df_int)
 
     # ── External data ──────────────────────────────────
     with open(EXTVAL_FILE, 'rb') as f:
@@ -45,34 +57,68 @@ def load_all_data():
     ext_true_class = [D9.get(t, str(t)) for t in ds['y_ext_class9']]
     ext_correct    = [int(p == t) for p, t in zip(ext_pred_class, ext_true_class)]
 
-    l1_p   = ext['ext_l1_proba']
-    l2_max = np.max(ext['ext_l2_proba'], axis=1)
-    l3_max = np.maximum(ext['ext_l3_proba'], 1 - ext['ext_l3_proba'])
-
-    ext_conf = []
-    for i, pc in enumerate(ext_pred_class):
-        if pc == 'NEGATIVE':
-            ext_conf.append(1.0 - l1_p[i])
-        else:
-            ext_conf.append(l1_p[i] * l2_max[i] * l3_max[i])
-
-    ext_zone = [
-        'HIGH' if c >= ZONE_THRESHOLDS['HIGH']
-        else 'MEDIUM' if c >= ZONE_THRESHOLDS['MEDIUM']
-        else 'LOW'
-        for c in ext_conf
-    ]
+    # Canonical compound confidence + zone (Task 1) — replaces the old simplified formula
+    # whose floor never dropped below 0.30 (so it could never assign a LOW zone).
+    l1_p    = np.asarray(ext['ext_l1_proba'], float)
+    l2_full = np.asarray(ext['ext_l2_proba'], float)      # (N,4) [IgG,IgA,IgM,Free]
+    l3_lam  = np.asarray(ext['ext_l3_proba'], float)      # P(lambda)
+    pos_idx = np.where(l1_p >= L1_THRESHOLD)[0]
+    ext_conf, ext_zone = inf.cohort_confidence(l1_p, l2_full[pos_idx], l3_lam[pos_idx], pos_idx)
+    # Split-conformal prediction set (Task 2)
+    P9_ext   = inf.build_p9(l1_p, l2_full, l3_lam)
+    ext_sets = inf.conformal_sets(P9_ext, CONFORMAL_PROB_THR)
+    l2_max = l2_full.max(axis=1)
+    l3_max = np.maximum(l3_lam, 1 - l3_lam)               # kept for the probability display
 
     df_ext = pd.DataFrame({
-        'pred_class': ext_pred_class, 'zone': ext_zone, 'confidence': ext_conf,
+        'pred_class': ext_pred_class, 'zone': list(ext_zone), 'confidence': list(ext_conf),
         'true_class': ext_true_class, 'correct': ext_correct,
         'action': 'External validation', 'source': 'External',
         'sig_idx': range(len(ext['ext_pred'])),
         'patient_id': [str(x) for x in ds['ext_sample_ids']],
         'p_L1': l1_p, 'p_L2': l2_max, 'p_L3': l3_max,
+        'conformal_set': ext_sets,
     })
 
-    master_df = pd.concat([df_int, df_ext], axis=0)
+    frames = [df_int, df_ext]
+
+    # ── Alicante cohort (optional — merged only if the files exist) ──────
+    if ALIC_DATASET_FILE.exists() and ALIC_FLOWDF_FILE.exists():
+        with open(ALIC_DATASET_FILE, 'rb') as f:
+            ds_alic = pickle.load(f)
+        ds['X_alic_3d']      = ds_alic['X_alic_3d']
+        ds['alic_sample_ids'] = np.asarray(ds_alic['alic_sample_ids'])
+
+        with open(ALIC_FLOWDF_FILE, 'rb') as f:
+            df_alic = pickle.load(f).copy()
+        df_alic['source']     = 'Alicante'
+        df_alic['sig_idx']    = df_alic.index
+        df_alic['patient_id'] = [str(ds['alic_sample_ids'][i]) for i in df_alic.index]
+
+        # Canonical confidence/zone + split-conformal set (same code path as External),
+        # using the full per-level probabilities stored in the Alicante dataset artifact.
+        if all(k in ds_alic for k in ('alic_l1', 'alic_l2', 'alic_l3')):
+            al1 = np.asarray(ds_alic['alic_l1'], float)
+            al2 = np.asarray(ds_alic['alic_l2'], float)
+            al3 = np.asarray(ds_alic['alic_l3'], float)
+            apos = np.where(al1 >= L1_THRESHOLD)[0]
+            ac, az = inf.cohort_confidence(al1, al2[apos], al3[apos], apos)
+            df_alic['confidence']    = list(ac)
+            df_alic['zone']          = list(az)
+            df_alic['conformal_set'] = inf.conformal_sets(inf.build_p9(al1, al2, al3),
+                                                          CONFORMAL_PROB_THR)
+        else:
+            df_alic['conformal_set'] = [_heuristic_conformal_set(r) for _, r in df_alic.iterrows()]
+        frames.append(df_alic)
+
+        if ALIC_SHAP_FILE.exists():
+            with open(ALIC_SHAP_FILE, 'rb') as f:
+                shap_alic = pickle.load(f)
+            for k, v in shap_alic.items():
+                if k.endswith('_alicante'):
+                    shap_d[k] = v
+
+    master_df = pd.concat(frames, axis=0)
     master_df.set_index('patient_id', inplace=True)
     return ds, shap_d, feat_dict, master_df
 
@@ -84,15 +130,21 @@ def get_patient_signal(ds, row):
     if row['source'] == 'External':
         pos = np.where(ds['ext_sample_ids'] == idx_int)[0][0]
         return ds['X_ext_3d'][pos]
+    elif row['source'] == 'Alicante':
+        pos = np.where(ds['alic_sample_ids'] == idx_int)[0][0]
+        return ds['X_alic_3d'][pos]
     else:
         pos = np.where(ds['sample_ids'] == idx_int)[0][0]
         return ds['X_3d'][pos]
 
 
 # ── SHAP retrieval ────────────────────────────────────────
-def get_patient_shap(shap_d, level, sig_idx, is_ext, n=8):
-    """Return list of (feat_name, feat_value, shap_value) tuples or status string."""
-    key = f"{level}_external" if is_ext else level
+def get_patient_shap(shap_d, level, sig_idx, src_suffix='', n=8):
+    """Return list of (feat_name, feat_value, shap_value) tuples or status string.
+
+    src_suffix: '' (Internal), '_external', or '_alicante' — see SRC_SUFFIX.
+    """
+    key = f"{level}{src_suffix}"
     if key not in shap_d:
         return "MISSING_KEY"
     si = np.array(shap_d[key].get('sample_indices', []))
@@ -106,9 +158,9 @@ def get_patient_shap(shap_d, level, sig_idx, is_ext, n=8):
     top = np.argsort(np.abs(sv))[::-1][:n]
     return [(feat_names[j], float(xv[j]), float(sv[j])) for j in top]
 
-def get_patient_shap_full(shap_d, level, sig_idx, is_ext):
+def get_patient_shap_full(shap_d, level, sig_idx, src_suffix=''):
     """Return full (feat_names, shap_values_399, x_values_399) or None."""
-    key = f"{level}_external" if is_ext else level
+    key = f"{level}{src_suffix}"
     if key not in shap_d:
         return None
     si = np.array(shap_d[key].get('sample_indices', []))
@@ -163,10 +215,46 @@ def get_human_readable_parts(feat_name, val, shap_val, feat_dict):
     return feat_name, paragraph, shap_val
 
 
-# ── Conformal prediction set (simple heuristic) ──────────
+# ── Split-conformal prediction set ───────────────────────
+@st.cache_resource
+def _internal_P9():
+    """Internal (2219,9) OOF P9 for the split-conformal set, or None if unavailable."""
+    for d in _OOF_DIRS:
+        if os.path.isdir(d):
+            P9 = inf.build_internal_P9_from_oof(d)
+            if P9 is not None:
+                return P9
+    return None
+
+
+def _internal_conformal_sets(df_int):
+    """Per-row split-conformal set for the internal cohort (paper procedure via OOF P9).
+
+    Full mode: flow_df index is 0..2218 and aligns to the OOF P9 by position. If the OOF
+    is missing or misaligned (e.g. DEMO_MODE's reindexed subset), fall back per row to the
+    zone-based heuristic so the app still renders.
+    """
+    P9 = _internal_P9()
+    idx = list(df_int['sig_idx'])
+    if P9 is not None and len(P9) >= len(df_int) and max(idx) < len(P9) and idx == list(range(len(df_int))):
+        return [inf.conformal_set(P9[i], CONFORMAL_PROB_THR) for i in idx]
+    return [_heuristic_conformal_set(r) for _, r in df_int.iterrows()]
+
+
 def build_conformal_set(row):
-    """Build conformal prediction set based on zone/confidence.
-    Returns list of candidate class labels."""
+    """Return the split-conformal prediction set for a patient (list of 9-class labels).
+
+    Uses the precomputed real set (P9 ≥ CONFORMAL_PROB_THR) attached at load time; falls
+    back to the zone heuristic only when no precomputed set is present.
+    """
+    cs = row.get('conformal_set') if hasattr(row, 'get') else None
+    if isinstance(cs, (list, tuple)) and len(cs) > 0:
+        return list(cs)
+    return _heuristic_conformal_set(row)
+
+
+def _heuristic_conformal_set(row):
+    """Legacy zone/confidence heuristic — fallback only (DEMO internal, missing OOF)."""
     pred = row['pred_class']
     zone = row['zone']
     if zone == 'HIGH':
@@ -174,9 +262,7 @@ def build_conformal_set(row):
     elif zone == 'MEDIUM':
         return sorted(set([pred, 'NEGATIVE']))
     else:
-        # LOW zone: include nearest plausible alternatives
         candidates = {pred, 'NEGATIVE'}
-        # Add light-chain variants
         if 'KAPPA' in pred:
             candidates.add(pred.replace('KAPPA', 'LAMBDA'))
         elif 'LAMBDA' in pred:
