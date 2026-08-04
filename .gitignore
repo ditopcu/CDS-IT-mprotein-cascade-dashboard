@@ -24,7 +24,8 @@ results/L4_ext_validation_results.pkl
 
 # Demo files are allowed (anonymized, small) — no exclusion rule
 
-# Frozen cascade models (downloaded from Google Drive; large, non-patient)
+# Superseded model export (NOT the published lineage — do not deploy or commit).
+# The models the app loads live in pkl/ and ARE committed; see config.MODEL_MD5.
 models_frozen/
 
 # Alicante external cohort — raw patient data + derived (never commit)
@@ -47,3 +48,49 @@ revision/
 
 # Plaintext API key — NEVER commit (rotate the key)
 api.txt
+
+# Internal development docs — never public
+CLAUDE.md
+APP_HANDOFF_UPDATE.md
+HANDOFF.md
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public-repo safety net. Everything below is present in the local working tree
+# but must never reach the public remote. Listed explicitly so that an accidental
+# `git add -A` cannot sweep it in. The deployed app is only the modules named in
+# CLAUDE.md plus cascade_src/ and pkl/.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Other working environments
+.venv-repro/
+venv2/
+
+# Patient-derived cohorts, signals and predictions outside the demo set
+rds/
+alicante_validation/
+ISH_SPE/
+SEBIA_IT_docs/
+CDS_Integration/
+results/L4_shap_dense_W_BASE.pkl
+results/L4_shap_dense_full_working_old.pkl
+results/L4_train_demographics.pkl
+results/*flow_df*.pkl
+!results/flow_df_demo.pkl
+!results/ext_flow_df_demo.pkl
+data/*- Copy*.pkl
+*.mdb
+*.rds
+*.RDS
+
+# Reproducibility package (ships its own patient data under reproducibility/data/)
+reproducibility/
+
+# Superseded / scratch modules — not part of the app
+*_old.py
+*v1.py
+utils.py
+debug.py
+only once.py
+abc.ps1
+*.rar
+table*.xlsx

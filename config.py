@@ -84,6 +84,46 @@ L1_THRESHOLD = 0.47219881415367126
 # = { class j : P9[j] ≥ CONFORMAL_PROB_THR }. Set size ≥ 2 ⇒ requires expert review.
 CONFORMAL_PROB_THR = 0.1835
 
+# ─── Frozen model artifacts (publication lineage) ────────────────────────
+# The three 5-fold XGBoost-Peak-Optuna ensembles are committed in pkl/ and md5-verified
+# at load time. These hashes identify the exact build used for the published results
+# (external 434/498 = 0.8715, internal OOF 1934/2219 = 0.8716). A mismatch means the
+# deployed artifact is not the published model → the upload/inference path is disabled.
+MODELS_DIR = "pkl"
+MODEL_FILES = {
+    "L1": "L1_xgb_peak_optuna_models.pkl",
+    "L2": "L2_xgb_peak_optuna_models.pkl",
+    "L3": "L3_xgb_peak_optuna_models.pkl",
+}
+MODEL_MD5 = {
+    "L1": "8f6d5e3aaeae1407d576682d74b6040e",
+    "L2": "c5f4baf396d8ce8c381d607a75bff9dd",
+    "L3": "5661f4c03101336104cd027d88136868",
+}
+
+# Frozen algorithm code vendored byte-identically from the model repository
+# (github.com/ditopcu/CDS-IT-mprotein-cascade, src/) into cascade_src/.
+# Shown in the app's integrity panel; informational (does not block startup).
+CASCADE_SRC_MD5 = {
+    "features.py":    "07c226b9db87bad69a3138853f05a268",
+    "cascade.py":     "87dc9004b5f92ecef5b9a1195b6a968b",
+    "confidence.py":  "9a7bebbe113f2f6c29561b27a2aa5bfb",
+    "constants.py":   "5b95dc7c45ce1517bfe1508a82557d81",
+    "calibration.py": "bfbb2212fa959ebb1f8cf708be598939",
+}
+
+# ─── Intended use (regulatory posture) ───────────────────────────────────
+INTENDED_USE_NOTICE = (
+    "Research use only. Not a medical device. Not for clinical diagnosis or patient "
+    "management. Outputs are model predictions and must not be used as a basis for "
+    "clinical decisions."
+)
+
+# ─── Upload guards (de-identified signal only) ───────────────────────────
+UPLOAD_MAX_BYTES    = 10 * 1024 * 1024   # 10 MB — ~300 samples of 1800 rows
+UPLOAD_MAX_SAMPLES  = 200                # per file
+UPLOAD_MAX_ROWS     = 400_000            # 200 samples × 6 curves × 300 points + margin
+
 # ─── Conformal prediction defaults ───────────────────────
 CP_ALPHA = 0.05
 
@@ -232,7 +272,11 @@ def get_reflex(pred_class, zone):
     return entry['gel_ife'], entry['tests'], entry['guidance'], show_baseline
 
 def generate_reflex_template(path="data/reflex_matrix.xlsx"):
-    """Generate a template Excel from hardcoded rules. Run once."""
+    """Generate a template Excel from the hardcoded rules.
+
+    `path` may be a filename or any writable buffer (the app passes a BytesIO so the
+    template is never written to disk).
+    """
     import pandas as pd
 
     # Sheet 1: Baseline

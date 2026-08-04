@@ -2,40 +2,43 @@
 inference.py — single source of truth for the FROZEN cascade math used by the dashboard.
 
 Nothing here retrains, refits, or recalibrates. It only:
-  • wraps the canonical algorithm code from ../CDS-IT-mprotein-cascade/src
-    (confidence.compute_cascade_confidence, confidence.build_cascade_proba_9class,
-     features.extract_all_features, cascade.run_external_cascade),
+  • wraps the frozen algorithm code vendored byte-identically in ./cascade_src
+    (confidence.compute_cascade_confidence, features.extract_all_features,
+     cascade.run_external_cascade),
   • computes the paper's compound confidence + zone (Task 1),
   • builds the study's split-conformal prediction set (Task 2), and
   • runs the frozen 5-fold ensemble end-to-end on user-uploaded signals (Task 4).
 
-Canonical facts (see revision/data/conformal_figure.py, memory cclm-revision-m1):
+Frozen facts (see memory cclm-revision-m1):
   L1 threshold  τ  = 0.47219881415367126   (reported 0.47; the 0.47147757 in the old
                                              frozen config was a stale MiniRocket leftover)
   Conformal: split-conformal, LAC score = 1 − p(true), α = 0.05, calibrated on the CLEAN
              external cohort (seed 42, 70% calibration) → q_hat = 0.8165 → prob threshold
              1 − q_hat = 0.1835.  Prediction set = { class j : P9[j] ≥ 0.1835 }.
   Deployed model = 5-fold ENSEMBLE (per-level predict_proba averaging), never a single refit.
+
+Models are loaded from ./pkl and md5-verified against config.MODEL_MD5 (the publication
+lineage) before use; a mismatch raises ModelIntegrityError and the upload path is disabled.
 """
 import os
 import sys
+import hashlib
 import numpy as np
 
-# numpy>=2 removed np.trapz (cascade features.py uses it) — shim before importing src.*
+# numpy>=2 removed np.trapz (cascade features.py uses it) — shim before importing cascade_src.*
 if not hasattr(np, "trapz"):
     np.trapz = np.trapezoid
 
-APP_ROOT    = os.path.dirname(os.path.abspath(__file__))
-CASCADE_SRC = os.environ.get(
-    "CASCADE_SRC", os.path.join(APP_ROOT, "..", "CDS-IT-mprotein-cascade"))
-MODELS_DIR  = os.path.join(APP_ROOT, "models_frozen")
+APP_ROOT   = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(APP_ROOT, "pkl")          # publication-lineage models (md5-gated)
 
-sys.path.insert(0, os.path.abspath(CASCADE_SRC))
-from src.constants import CLASS9_NAMES, L2_CLASSES, CHANNELS          # noqa: E402
-from src.confidence import compute_cascade_confidence                 # noqa: E402
+if APP_ROOT not in sys.path:
+    sys.path.insert(0, APP_ROOT)
+from cascade_src.constants import CLASS9_NAMES, L2_CLASSES, CHANNELS   # noqa: E402
+from cascade_src.confidence import compute_cascade_confidence          # noqa: E402
 
 # ── frozen constants ─────────────────────────────────────────────────────────
-TAU = 0.47219881415367126                       # canonical L1 threshold
+TAU = 0.47219881415367126                       # frozen L1 threshold
 HEAVY_MAP = {"IGG": 0, "IGA": 1, "IGM": 2, "FREE": 3}
 _C2I = {c: i for i, c in enumerate(CLASS9_NAMES)}
 _NEG = _C2I["NEGATIVE"]
@@ -170,12 +173,6 @@ LANE_ALIASES = {   # accepted curve_name spellings → canonical lane
 LANE_ORDER = ["ELP", "IgG", "IgA", "IgM", "Kappa", "Lambda"]  # dif channels built from these
 
 
-def decode_curve(hex_str):
-    """Sebia mdb `curva` hex → 300-pt array (12-bit value = int(chunk[1:4],16)+1, drop dot_type, reversed)."""
-    v = [int(hex_str[i + 1:i + 4], 16) + 1 for i in range(0, 1200, 4)]
-    return np.asarray(v, float)[::-1]
-
-
 class UploadError(ValueError):
     """Raised for malformed / non-conforming uploads (shown to the user, never a crash)."""
 
@@ -217,36 +214,61 @@ def example_signal_df():
     return pd.DataFrame(rows)
 
 
-def parse_long_format_excel(file_like):
+# Reference format, repeated in every rejection message so the user can self-correct
+# without the app ever quoting their file back at them.
+_FORMAT_HINT =("Expected a long-format .xlsx with columns sample_id, curve_name, x, y; "
+                "per sample exactly 6 curves (ELP, IgG, IgA, IgM, Kappa, Lambda) × 300 "
+                "points (x = 0…299), numeric y. Use the example template above.")
+
+
+def parse_long_format_excel(file_like, max_bytes=None, max_samples=None, max_rows=None):
     """Long-format signal Excel → (X_3d (N,6,300), sample_ids).
 
     Columns: sample_id, curve_name, x (0-299), y. Exactly 6 curves × 300 points per sample.
-    PRIVACY: only these four columns are read; every other column / sheet / header field
-    (patient IDs, names, accession numbers) is ignored and never touches memory downstream.
+
+    PRIVACY CONTRACT:
+      • Read fully in memory from the given buffer — nothing is written to disk.
+      • Only the four signal columns are retained; every other column / sheet / header
+        field (names, accession numbers, dates) is dropped before any downstream use.
+      • Rejection messages are FIXED strings: they never echo a value, identifier, count
+        or filename from the uploaded file.
     """
     import pandas as pd
+    from config import UPLOAD_MAX_BYTES, UPLOAD_MAX_SAMPLES, UPLOAD_MAX_ROWS
+    max_bytes   = UPLOAD_MAX_BYTES   if max_bytes   is None else max_bytes
+    max_samples = UPLOAD_MAX_SAMPLES if max_samples is None else max_samples
+    max_rows    = UPLOAD_MAX_ROWS    if max_rows    is None else max_rows
+
+    size = getattr(file_like, "size", None)
+    if size is not None and size > max_bytes:
+        raise UploadError(f"File too large (limit {max_bytes // (1024 * 1024)} MB). "
+                          "Please split the upload into smaller files.")
     try:
         raw = pd.read_excel(file_like)
-    except Exception as e:
-        raise UploadError(f"Could not read the Excel file: {e}")
-    cols = {c.lower().strip(): c for c in raw.columns}
+    except Exception:
+        raise UploadError("The file could not be read as an Excel workbook. " + _FORMAT_HINT)
+    if len(raw) > max_rows:
+        raise UploadError(f"Too many rows (limit {max_rows:,}). "
+                          "Please split the upload into smaller files.")
+
+    cols = {str(c).lower().strip(): c for c in raw.columns}
     need = ["sample_id", "curve_name", "x", "y"]
-    missing = [c for c in need if c not in cols]
-    if missing:
-        raise UploadError(f"Missing required column(s): {', '.join(missing)}. "
-                          f"Expected long format: sample_id, curve_name, x, y.")
+    if any(c not in cols for c in need):
+        raise UploadError("Required column(s) missing. " + _FORMAT_HINT)
     df = raw[[cols["sample_id"], cols["curve_name"], cols["x"], cols["y"]]].copy()
     df.columns = ["sample_id", "curve_name", "x", "y"]           # discard all other columns
+    del raw                                                       # drop identity-bearing columns
     df["lane"] = df["curve_name"].astype(str).str.strip().map(
         lambda s: LANE_ALIASES.get(s, LANE_ALIASES.get(s.upper())))
     if df["lane"].isna().any():
-        bad = sorted(df.loc[df["lane"].isna(), "curve_name"].astype(str).unique())[:6]
-        raise UploadError(f"Unrecognized curve_name value(s): {bad}. "
-                          f"Expected ELP, IgG, IgA, IgM, Kappa, Lambda (Lamda accepted).")
+        raise UploadError("One or more curve_name values are not recognized. " + _FORMAT_HINT)
     if not np.issubdtype(df["y"].dtype, np.number):
         df["y"] = pd.to_numeric(df["y"], errors="coerce")
         if df["y"].isna().any():
-            raise UploadError("Column 'y' must be numeric.")
+            raise UploadError("Column 'y' must be numeric. " + _FORMAT_HINT)
+    if df["sample_id"].nunique() > max_samples:
+        raise UploadError(f"Too many samples in one file (limit {max_samples}). "
+                          "Please split the upload into smaller files.")
 
     X, ids = [], []
     for sid, g in df.groupby("sample_id", sort=False):
@@ -254,62 +276,76 @@ def parse_long_format_excel(file_like):
         for lane, gl in g.groupby("lane"):
             gl = gl.sort_values("x")
             if len(gl) != 300:
-                raise UploadError(f"Sample {sid}, lane {lane}: {len(gl)} points (need exactly 300).")
+                raise UploadError("A sample has a curve with the wrong number of points. "
+                                  + _FORMAT_HINT)
             lanes[lane] = gl["y"].to_numpy(float)
-        missing_lanes = [l for l in LANE_ORDER if l not in lanes]
-        if missing_lanes:
-            raise UploadError(f"Sample {sid}: missing lane(s) {missing_lanes}. "
-                              f"Each sample needs all 6 curves (ELP, IgG, IgA, IgM, Kappa, Lambda).")
+        if any(l not in lanes for l in LANE_ORDER):
+            raise UploadError("A sample is missing one or more of the 6 required curves. "
+                              + _FORMAT_HINT)
         X.append(_lanes_to_sample(lanes)); ids.append(str(sid))
     if not X:
-        raise UploadError("No complete samples found in the file.")
-    return np.asarray(X), ids
-
-
-def parse_mdb(path):
-    """Sebia .mdb (Anagrafica.curva) → (X_3d, sample_ids). PRIVACY: only id + curva read.
-
-    Requires pyodbc + the Microsoft Access ODBC driver (Windows). Uses the frozen decode.
-    """
-    try:
-        import pyodbc
-    except ImportError:
-        raise UploadError("Reading .mdb needs pyodbc + the Microsoft Access ODBC driver. "
-                          "Please export the long-format Excel instead.")
-    conn = pyodbc.connect(
-        r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=" + os.path.abspath(path) + ";")
-    cur = conn.cursor()
-    bases = sorted({i[:-4] for (i,) in
-                    cur.execute("SELECT id FROM Anagrafica WHERE id LIKE '%-ELP'").fetchall()})
-    if not bases:
-        raise UploadError("No 6-lane immunotyping samples found (expected ids like <barcode>-ELP).")
-    suffix = {"ELP": "-ELP", "IgG": "-IgG", "IgA": "-IgA", "IgM": "-IgM",
-              "Kappa": "-K", "Lambda": "-L"}
-    X, ids = [], []
-    for bc in bases:
-        lanes, ok = {}, True
-        for lane, suf in suffix.items():
-            row = cur.execute("SELECT curva FROM Anagrafica WHERE id=?", bc + suf).fetchone()
-            if row is None:
-                ok = False; break
-            lanes[lane] = decode_curve(row[0])
-        if ok:
-            X.append(_lanes_to_sample(lanes)); ids.append(str(bc))
-    if not X:
-        raise UploadError("No sample had all 6 lanes (ELP/IgG/IgA/IgM/K/L).")
+        raise UploadError("No complete samples found in the file. " + _FORMAT_HINT)
     return np.asarray(X), ids
 
 
 _MODELS = None
 
 
+class ModelIntegrityError(RuntimeError):
+    """Raised when a model artifact's md5 does not match the published lineage."""
+
+
+def _md5(path):
+    h = hashlib.md5()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def model_md5_report():
+    """[(level, filename, expected_md5, actual_md5_or_None, ok)] for the integrity panel."""
+    from config import MODEL_FILES, MODEL_MD5
+    rows = []
+    for lv in ("L1", "L2", "L3"):
+        p = os.path.join(MODELS_DIR, MODEL_FILES[lv])
+        actual = _md5(p) if os.path.exists(p) else None
+        rows.append((lv, MODEL_FILES[lv], MODEL_MD5[lv], actual, actual == MODEL_MD5[lv]))
+    return rows
+
+
+def cascade_src_md5_report():
+    """[(filename, expected_md5, actual_md5_or_None, ok)] for the vendored algorithm code."""
+    from config import CASCADE_SRC_MD5
+    src_dir = os.path.join(APP_ROOT, "cascade_src")
+    rows = []
+    for fn, exp in CASCADE_SRC_MD5.items():
+        p = os.path.join(src_dir, fn)
+        actual = _md5(p) if os.path.exists(p) else None
+        rows.append((fn, exp, actual, actual == exp))
+    return rows
+
+
+def verify_models():
+    """Raise ModelIntegrityError unless all three artifacts match the published lineage."""
+    for lv, fn, exp, actual, ok in model_md5_report():
+        if actual is None:
+            raise ModelIntegrityError(f"model integrity check failed: {lv} artifact missing")
+        if not ok:
+            raise ModelIntegrityError(
+                f"model integrity check failed: {lv} md5 {actual} != expected {exp}")
+
+
 def _load_models():
+    """Load the md5-verified 5-fold ensembles from pkl/. Verification happens BEFORE unpickling."""
     global _MODELS
     if _MODELS is None:
         import pickle
+        from config import MODEL_FILES
+        verify_models()
         _MODELS = tuple(
-            pickle.load(open(os.path.join(MODELS_DIR, f"L{lv}_xgb_peak_optuna_models.pkl"), "rb"))
-            for lv in (1, 2, 3))
+            pickle.load(open(os.path.join(MODELS_DIR, MODEL_FILES[lv]), "rb"))
+            for lv in ("L1", "L2", "L3"))
     return _MODELS
 
 
@@ -319,8 +355,8 @@ def run_frozen_cascade(X_3d, prob_thr, with_shap=True):
     Returns a list of per-sample dicts: pred, l1/l2/l3, P9, confidence, zone,
     conformal_set(+size), and (optional) SHAP top-feature lists per level.
     """
-    from src.features import extract_all_features
-    from src.cascade import run_external_cascade
+    from cascade_src.features import extract_all_features
+    from cascade_src.cascade import run_external_cascade
     L1, L2, L3 = _load_models()
     feat = extract_all_features(np.asarray(X_3d, float), channels=CHANNELS, verbose=False)
     Xf = feat.values

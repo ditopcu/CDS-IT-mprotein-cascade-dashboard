@@ -11,7 +11,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-from config import ZONE_COLORS, CP_ALPHA, pretty, reflex_group
+from config import (
+    ZONE_COLORS, CP_ALPHA, pretty, reflex_group,
+    INTENDED_USE_NOTICE, UPLOAD_MAX_BYTES, UPLOAD_MAX_SAMPLES,
+)
 from data_loader import (
     load_all_data, get_patient_signal, get_patient_shap,
     get_patient_shap_full, get_human_readable_parts,
@@ -60,8 +63,37 @@ st.markdown("""
     [data-testid="stExpander"] h2, [data-testid="stExpander"] h3 {
         font-size: 1rem !important; margin: 0 !important;
     }
+    .intended-use-banner {
+        background: #FFF4E5;
+        border: 1px solid #E8A33D;
+        border-left: 5px solid #C77700;
+        border-radius: 5px;
+        padding: 0.45rem 0.75rem;
+        margin: 0 0 0.5rem 0;
+        color: #5A3A00;
+        font-size: 0.86rem;
+        line-height: 1.35;
+    }
+    .intended-use-banner strong { color: #8A4B00; }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════
+#  INTENDED-USE NOTICE (permanent, non-dismissible)
+# ═══════════════════════════════════════════════════════════
+def render_intended_use_banner():
+    """Regulatory posture banner. Rendered at the top of the page and inside the upload tab.
+
+    Deliberately plain HTML with no close control — it must not be dismissible.
+    """
+    lead, _, rest = INTENDED_USE_NOTICE.partition(". ")
+    st.markdown(
+        f'<div class="intended-use-banner">⚠️ <strong>{lead}.</strong> {rest}</div>',
+        unsafe_allow_html=True)
+
+
+render_intended_use_banner()
 
 # ═══════════════════════════════════════════════════════════
 #  DATA LOADING
@@ -150,33 +182,77 @@ with st.sidebar:
             st.rerun()
     with col_download:
         from config import generate_reflex_template
-        import tempfile, os
-        tmp_path = os.path.join(tempfile.gettempdir(), "reflex_matrix_template.xlsx")
-        generate_reflex_template(tmp_path)
-        with open(tmp_path, "rb") as f:
-            st.download_button("📥 Template", data=f, file_name="reflex_matrix.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        import io
+        _rbuf = io.BytesIO()                       # built in memory — nothing hits disk
+        generate_reflex_template(_rbuf)
+        st.download_button("📥 Template", data=_rbuf.getvalue(), file_name="reflex_matrix.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ═══════════════════════════════════════════════════════════
 #  MAIN PANEL
 # ═══════════════════════════════════════════════════════════
+def _render_model_integrity_panel():
+    """Show the md5 of every frozen artifact the upload path depends on. Returns models_ok."""
+    try:
+        models = inf.model_md5_report()
+        srcs = inf.cascade_src_md5_report()
+    except Exception:
+        st.error("❌ Model integrity check failed — the frozen model artifacts could not be read. "
+                 "The upload path is disabled. Precomputed cohort results are unaffected.")
+        return False
+
+    models_ok = all(ok for *_, ok in models)
+    with st.expander("🔐 Model & code integrity" + ("" if models_ok else " — ⚠️ FAILED"),
+                     expanded=not models_ok):
+        st.caption(
+            "The deployed model is the frozen 5-fold XGBoost-Peak-Optuna ensemble from the "
+            "published lineage. Every artifact is md5-verified before it is loaded; the "
+            "algorithm code is vendored byte-identically from the model repository.")
+        st.markdown("**Model artifacts** (`pkl/`)")
+        st.dataframe(pd.DataFrame([
+            {"level": lv, "file": fn, "expected md5": exp,
+             "actual md5": (act or "— missing —"), "status": "✓ verified" if ok else "✗ MISMATCH"}
+            for lv, fn, exp, act, ok in models
+        ]), use_container_width=True, hide_index=True)
+        st.markdown("**Frozen algorithm code** (`cascade_src/`)")
+        st.dataframe(pd.DataFrame([
+            {"file": fn, "expected md5": exp, "actual md5": (act or "— missing —"),
+             "status": "✓ byte-identical" if ok else "✗ MISMATCH"}
+            for fn, exp, act, ok in srcs
+        ]), use_container_width=True, hide_index=True)
+        st.caption(f"L1 decision threshold τ = {inf.TAU!r} · conformal probability threshold "
+                   f"= {inf.CONFORMAL_PROB_THR_DEFAULT}")
+    if not models_ok:
+        st.error("❌ Model integrity check failed — the deployed model does not match the "
+                 "published lineage. The upload path is disabled. Precomputed cohort results "
+                 "are unaffected.")
+    return models_ok
+
+
 def _render_upload_section(feat_dict):
-    """Reviewer M4: upload anonymized signals → run the FROZEN cascade → same outputs."""
+    """Reviewer M4: upload de-identified signals → run the FROZEN cascade → same outputs."""
+    render_intended_use_banner()
     st.markdown(
-        "Upload your own **anonymized** capillary immunotyping signals to evaluate the "
+        "Upload your own **de-identified** capillary immunotyping signals to evaluate the "
         "frozen model on external data — the reviewer-requested independent-validation path.")
     st.info(
-        "🔒 **Data handling.** Upload a de-identified **Excel** signal file only. It is processed "
-        "**transiently in memory** to run inference and is **not stored, not logged, and not used for "
-        "training**. Only the four signal columns are read — any other column or header field is "
-        "ignored and never processed. The deployed model is **frozen and versioned** "
+        "🔒 **Data handling.** Upload **de-identified signal data only** — no names, no patient "
+        "or accession numbers, no dates. The file is processed **transiently in memory**: it is "
+        "**never written to disk, never logged, and never used for training**. Only the four "
+        "signal columns are read; every other column, sheet and header field is discarded before "
+        "processing. Results live only in your browser session and disappear when you close the "
+        "tab or press *Clear uploaded data*. The deployed model is **frozen and md5-verified** "
         "(5-fold XGBoost-Peak-Optuna ensemble; forward inference only)."
         "\n\n*(Raw Sebia `.mdb` exports are intentionally not accepted — they can embed patient "
-        "identifiers. Export the anonymized long-format table below instead.)*")
+        "identifiers. Export the de-identified long-format table below instead.)*")
     st.caption(
         "**Format — long-format Excel (.xlsx):** columns `sample_id, curve_name, x, y`. "
         "Per sample: exactly **6 curves** (ELP, IgG, IgA, IgM, Kappa, Lambda) × **300 points** "
-        "(`x` = 0…299). One row per (curve, point). Multiple samples per file are allowed.")
+        f"(`x` = 0…299). One row per (curve, point). Up to **{UPLOAD_MAX_SAMPLES} samples** and "
+        f"**{UPLOAD_MAX_BYTES // (1024 * 1024)} MB** per file. `sample_id` is your own label — "
+        "use a study code, never a patient identifier.")
+
+    models_ok = _render_model_integrity_panel()
 
     import io
     _tmpl = inf.example_signal_df()
@@ -186,27 +262,44 @@ def _render_upload_section(feat_dict):
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        help="One fully-filled example sample (EXAMPLE_001) showing the exact format.")
 
+    if st.session_state.get("_upload_cache"):
+        if st.button("🗑️ Clear uploaded data", key="_clear_upload",
+                     help="Discard the uploaded signals and all derived results from this session."):
+            st.session_state.pop("_upload_cache", None)
+            st.session_state.pop("_ext_upload_sel", None)
+            st.rerun()
+
+    if not models_ok:
+        return
+
     up = st.file_uploader("De-identified signal Excel (.xlsx)", type=["xlsx", "xls"],
                           key="_ext_upload_file")
     if up is None:
         return
-    sig_key = f"{up.name}:{up.size}"
+    # Session cache key: hash of (name, size) so the filename itself is never retained.
+    import hashlib
+    sig_key = hashlib.sha256(f"{up.name}:{up.size}".encode()).hexdigest()[:16]
     cache = st.session_state.setdefault("_upload_cache", {})
     if sig_key not in cache:
         try:
             X, ids = inf.parse_long_format_excel(up)   # validates cols, 6 curves, 300 pts, numeric y
         except inf.UploadError as e:
-            st.error(f"❌ Upload rejected (validation): {e}")
+            # UploadError messages are fixed strings by contract — they never echo file content.
+            st.error(f"❌ Upload rejected: {e}")
             return
-        except Exception as e:
-            st.error(f"❌ Could not process the file: {e}")
+        except Exception:
+            st.error("❌ The file could not be processed. Please check it against the example "
+                     "template above and try again.")
             return
         st.caption(f"✓ Validated: {len(ids)} sample(s), 6 curves × 300 points each, numeric signals.")
         with st.spinner(f"Running the frozen cascade on {len(ids)} sample(s)…"):
             try:
                 results, _ = inf.run_frozen_cascade(X, inf.CONFORMAL_PROB_THR_DEFAULT, with_shap=True)
-            except Exception as e:
-                st.error(f"❌ Inference failed: {e}")
+            except inf.ModelIntegrityError:
+                st.error("❌ Model integrity check failed — inference was not run.")
+                return
+            except Exception:
+                st.error("❌ Inference could not be completed for this file.")
                 return
         cache[sig_key] = {"ids": ids, "X": X, "results": results}
     data = cache[sig_key]

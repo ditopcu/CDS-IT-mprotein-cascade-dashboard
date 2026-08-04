@@ -4,16 +4,17 @@ Page 1: Executive Summary (decision at a glance)
 Page 2: Evidence (Baseline Panel + SHAP XAI explanations)
 """
 import io
-import tempfile
 from datetime import date
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.colors import HexColor
+from reportlab.lib.utils import ImageReader
 
 from config import (
     ZONE_COLORS, PDF_DPI, PDF_MARGIN as M,
     SHAP_POS_COLOR, SHAP_NEG_COLOR, pretty,
     reflex_group, UNIVERSAL_BASELINE, REFLEX_MATRIX,
+    INTENDED_USE_NOTICE,
 )
 from data_loader import get_human_readable_parts
 
@@ -39,6 +40,18 @@ def _wrap(c, text, x, y, max_w, font, size, lh):
     return y
 
 
+def _draw_fig(c, fig, x, y, w, h):
+    """Place a Matplotlib figure on the canvas via an in-memory PNG.
+
+    Figures are patient-derived, so they are never written to a temp file — rendering
+    through BytesIO leaves no image on disk.
+    """
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', bbox_inches='tight', dpi=PDF_DPI)
+    buf.seek(0)
+    c.drawImage(ImageReader(buf), x, y, width=w, height=h, preserveAspectRatio=True)
+
+
 def _heading(c, text, x, y):
     """Section heading with thin underline."""
     c.setFont('Helvetica-Bold', 11)
@@ -50,7 +63,16 @@ def _heading(c, text, x, y):
 
 
 def _footer(c, text, y=20):
-    """Page footer."""
+    """Page footer: the intended-use notice above the page label. On every page."""
+    from reportlab.lib.pagesizes import A4 as _A4
+    max_w = _A4[0] - 2 * M
+    c.setFillColor(HexColor('#8A4B00'))
+    # Wrap upward from the page label so the notice never collides with it.
+    n_lines = 1
+    while c.stringWidth(INTENDED_USE_NOTICE, 'Helvetica-Bold', 6.5) / n_lines > max_w:
+        n_lines += 1
+    _wrap(c, INTENDED_USE_NOTICE, M, y + 9 + (n_lines - 1) * 7.5, max_w,
+          'Helvetica-Bold', 6.5, 7.5)
     c.setFont('Helvetica', 7)
     c.setFillColor(HexColor('#BBBBBB'))
     c.drawString(M, y, text)
@@ -194,10 +216,7 @@ def create_pdf(row, disp_id, cp_set, reflex_text,
 
     # ── 5. Signal Trace ──
     SIG_TOP = ROW2_Y - 75
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
-        fig_sig.savefig(tmp.name, format='png', bbox_inches='tight', dpi=PDF_DPI)
-        c.drawImage(tmp.name, M, SIG_TOP - 150, width=W_content, height=150,
-                    preserveAspectRatio=True)
+    _draw_fig(c, fig_sig, M, SIG_TOP - 150, W_content, 150)
 
     # ── 6. SHAP Waterfalls (3 side-by-side) ──
     SHAP_TOP = SIG_TOP - 170
@@ -205,10 +224,7 @@ def create_pdf(row, disp_id, cp_set, reflex_text,
     SHAP_TOP -= 5
     pw = W_content / 3
     for i, fs in enumerate([fig_s1, fig_s2, fig_s3]):
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
-            fs.savefig(tmp.name, format='png', bbox_inches='tight', dpi=PDF_DPI)
-            c.drawImage(tmp.name, M + i * pw, SHAP_TOP - 140, width=pw, height=140,
-                        preserveAspectRatio=True)
+        _draw_fig(c, fs, M + i * pw, SHAP_TOP - 140, pw, 140)
 
     # ── 7. AI Interpretation (compact, page 1 bottom) ──
     if ai_interpretation:

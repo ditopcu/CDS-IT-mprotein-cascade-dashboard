@@ -13,9 +13,33 @@ plotly>=5.18.0
 # ── PDF Export ──
 reportlab>=4.0.0
 
-# ── Excel (reflex rules) ──
+# ── Excel (reflex rules + signal upload) ──
 openpyxl>=3.1.0
 
 # ── LLM Integration (optional — app works without these) ──
 httpx>=0.25.0
 # Alternative: requests>=2.31.0 (used as fallback if httpx unavailable)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FROZEN INFERENCE STACK — pinned, do not relax
+# ══════════════════════════════════════════════════════════════════════════════
+# Required by the "upload your own signals" path (cascade_src/ + the pkl/ models).
+# These versions are pinned because they are the environment in which a fresh
+# forward pass reproduces the stored external-cohort results EXACTLY:
+#   498/498 identical 9-class predictions vs results/L4_ext_validation_results.pkl,
+#   L1 probability max|Δ| = 5.0e-04, L3 max|Δ| = 0.
+#
+# xgboost is the load-bearing pin. Measured on the 498-sample external cohort with an
+# identical feature matrix, changing ONLY the xgboost version:
+#   xgboost 3.2.0 → 498/498 match (495/498 bit-identical L1 probabilities)
+#   xgboost 2.1.4 → 491/498 match (7 differ; a systematic ~1e-2 L1 offset on every
+#                   sample, flipping 6 borderline kappa/lambda calls and 1 neg/pos call)
+# The models were serialized by xgboost 3.x; 2.1.4 warns when unpickling them.
+#
+# scipy is NOT the driver: 1.17.1 and 1.18.0 produce identical peak features (only
+# skewness/kurtosis differ, at ~1e-15 float round-off). It is pinned to the verified
+# combination for reproducibility, not because it changes results.
+xgboost==3.2.0
+scikit-learn==1.6.1
+scipy==1.18.0
+shap==0.52.0

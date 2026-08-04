@@ -2,6 +2,10 @@
 # The app's inline HTML/CSS hardcodes light-assuming colors (#222, #555, #888,
 # #FFF8E1, …); on a dark OLED theme those low-contrast grays become unreadable.
 # Pinning base="light" gives a white background so all inline styling reads correctly.
+# No usage telemetry — the app accepts user-uploaded clinical signal data.
+[browser]
+gatherUsageStats = false
+
 [theme]
 base = "light"
 backgroundColor = "#FFFFFF"

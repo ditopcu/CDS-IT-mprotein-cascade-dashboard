@@ -1,0 +1,9 @@
+# The vendored frozen algorithm code must check out BYTE-IDENTICALLY on every
+# platform. Without `-text`, core.autocrlf rewrites line endings on checkout, so a
+# Linux deploy would produce different bytes than the Windows working copy and the
+# hashes in config.CASCADE_SRC_MD5 — the published integrity record — would no
+# longer match. Store and restore these files verbatim.
+cascade_src/** -text
+
+# Frozen model artifacts: md5-gated at load time, never line-ending converted.
+*.pkl binary
