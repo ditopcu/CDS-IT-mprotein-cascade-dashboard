@@ -5,6 +5,8 @@ Page 2: Evidence (Baseline Panel + SHAP XAI explanations)
 """
 import io
 from datetime import date
+
+import pandas as pd
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.colors import HexColor
@@ -98,10 +100,18 @@ def create_pdf(row, disp_id, cp_set, reflex_text,
     # ══════════════════════════════════════════════════
 
     # ── Ground truth tag ──
-    true_col = '#1A9641' if row['correct'] == 1 else '#D73027'
-    c.setFont('Helvetica-Bold', 9)
-    c.setFillColor(HexColor(true_col))
-    c.drawString(M, H - 35, f'[GROUND TRUTH: {pretty(row["true_class"])}]')
+    # Only when there is one. An uploaded sample carries no reference interpretation, so
+    # true_class is None there; printing it unguarded produced a red "[GROUND TRUTH: None]".
+    _gt = row.get('true_class') if hasattr(row, 'get') else row['true_class']
+    if _gt is not None and pd.notnull(_gt):
+        true_col = '#1A9641' if row['correct'] == 1 else '#D73027'
+        c.setFont('Helvetica-Bold', 9)
+        c.setFillColor(HexColor(true_col))
+        c.drawString(M, H - 35, f'[GROUND TRUTH: {pretty(_gt)}]')
+    else:
+        c.setFont('Helvetica-Bold', 9)
+        c.setFillColor(HexColor('#666666'))
+        c.drawString(M, H - 35, '[no reference interpretation]')
 
     # ── Title bar ──
     c.setFont('Helvetica-Bold', 16)
