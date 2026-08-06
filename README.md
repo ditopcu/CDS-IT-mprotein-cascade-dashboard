@@ -2,7 +2,12 @@
 
 Interactive web-based Clinical Decision Support (CDS) system for cascade M-protein classification from 6-channel capillary zone electrophoresis immunotyping (CZE-IT) signals.
 
-Built with [Streamlit](https://streamlit.io/) · No GPU required · Runs on pre-computed model outputs
+Built with [Streamlit](https://streamlit.io/) · No GPU required · Renders pre-computed cohort
+results, plus an optional frozen-inference path for user-supplied signals
+
+> **Research use only. Not a medical device.** This dashboard is a research prototype and must
+> not be used to guide patient care. The same notice is shown as a non-dismissible banner on
+> every screen of the application and in the footer of every exported PDF.
 
 ---
 
@@ -10,109 +15,102 @@ Built with [Streamlit](https://streamlit.io/) · No GPU required · Runs on pre-
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/<your-username>/ife-mprotein-cds.git
-cd ife-mprotein-cds
+git clone https://github.com/ditopcu/CDS-IT-mprotein-cascade-dashboard.git
+cd CDS-IT-mprotein-cascade-dashboard
 pip install -r requirements.txt
 
-# 2. Place data files (see "Data Files" section below)
-
-# 3. Run
+# 2. Run — demo mode is the default and needs no additional data
 streamlit run app.py
 ```
+
+The committed demo cohort (50 anonymized patients) ships with the repository, so a fresh clone
+runs out of the box. To run against the full, non-committed cohort instead:
+
+```bash
+DEMO_MODE=false streamlit run app.py
+```
+
+`DEMO_MODE` (default `true`) selects the file suffix used throughout `config.py`: `_demo`
+variants when on, the full files when off. The full files hold patient data and are never
+committed.
 
 ---
 
 ## Project Structure
 
 ```
-ife-mprotein-cds/
+CDS-IT-mprotein-cascade-dashboard/
 │
-├── app.py                             # Main Streamlit application
-├── config.py                          # Constants, thresholds, reflex matrix
-├── data_loader.py                     # Data I/O, SHAP retrieval, feature NLP
+├── app.py                             # Streamlit UI orchestration
+├── config.py                          # Constants, thresholds, reflex matrix, DEMO_MODE
+├── data_loader.py                     # Pickle I/O, SHAP retrieval, feature NLP
+├── inference.py                       # Frozen cascade math + upload pipeline
 ├── plotting.py                        # Plotly (web) + Matplotlib (PDF) visuals
-├── pdf_export.py                      # Two-page ReportLab PDF generator
-├── llm_interpret.py                   # LLM clinical interpretation module
+├── pdf_export.py                      # ReportLab PDF report
+├── llm_interpret.py                   # Optional LLM interpretation
 ├── requirements.txt                   # Python dependencies
-├── README.md                          # This file
 │
-├── data/                              # ⬇ NOT in repo — user-provided
-│   ├── dataset.pkl                    #   Signals + labels (37.4 MB)
-│   ├── feature_dictionary.pkl         #   Feature descriptions (4 KB)
-│   └── reflex_matrix.xlsx             #   (Optional) Custom reflex rules (8 KB)
+├── cascade_src/                       # Frozen algorithm code, vendored byte-identically
+│   ├── features.py  cascade.py        #   from the model repository — never edited here
+│   ├── confidence.py  calibration.py
+│   └── constants.py
 │
-└── results/                           # ⬇ NOT in repo — user-provided
-    ├── flow_df.pkl                    #   Internal validation results (100 KB)
-    ├── L4_shap_dense_full.pkl         #   SHAP matrices + base values (15.7 MB)
-    └── L4_ext_validation_results.pkl  #   External validation results (20 KB)
+├── pkl/                               # ✓ in repo — committed, md5-gated 5-fold ensembles
+│   └── L{1,2,3}_xgb_peak_optuna_models.pkl
+│
+├── data/                              # ✓ demo variants in repo
+│   ├── dataset_demo.pkl               #   50 anonymized patients
+│   ├── feature_dictionary.pkl         #   Feature descriptions (no demo variant)
+│   └── reflex_matrix.xlsx             #   Optional editable reflex rules
+│
+└── results/                           # ✓ demo variants in repo
+    ├── flow_df_demo.pkl
+    ├── L4_shap_dense_full_demo.pkl
+    └── L4_ext_validation_results_demo.pkl
 ```
+
+The full-cohort counterparts (`dataset.pkl`, `flow_df.pkl`, `L4_shap_dense_full.pkl`,
+`L4_ext_validation_results.pkl`) hold patient data, are gitignored, and are never committed.
 
 ---
 
-## Source Code (6 files, ~2000 lines total)
+## Modules
 
-### `app.py` (~560 lines)
-Main Streamlit orchestration with three-layer information architecture:
+| Module | Responsibility |
+|--------|----------------|
+| `app.py` | UI orchestration only. The sidebar filters build the cohort subset; the main panel resolves one patient and renders the tabs. All layout and inline CSS live here. |
+| `config.py` | Constants, `DEMO_MODE` and file paths, label maps, zone thresholds and colours, and the hardcoded reflex testing decision matrix (`REFLEX_MATRIX`, `UNIVERSAL_BASELINE`, `reflex_group()`). |
+| `data_loader.py` | All pickle I/O behind a cached `load_all_data()`, merging the internal and external cohorts into one `master_df`. Also SHAP retrieval, the feature-name → clinical-prose NLP, and the reflex-rules loader. |
+| `inference.py` | The frozen cascade math and the upload pipeline: `build_p9`, `conformal_set`, `cohort_confidence`, `run_frozen_cascade`, and the md5 integrity helpers. |
+| `plotting.py` | Two rendering engines kept in sync: `plotly_*` for the interactive view, `mpl_*` for the PDF. |
+| `pdf_export.py` | The ReportLab report, built from the Matplotlib figures and embedded through `BytesIO` — never a temp file, since the plots are patient-derived. |
+| `llm_interpret.py` | Optional Anthropic interpretation, with Research (ground truth visible) and Clinical (ground truth hidden) prompt modes. Without a key it degrades to template text and never crashes the app. |
+| `cascade_src/` | The frozen algorithm code, vendored byte-identically from the model repository. Edit upstream and re-copy; never edit it here. |
 
-- **Layer 1 — Executive Summary:** Classification result (large font), conformal prediction set (badges), confidence zone (traffic light), reflex test recommendation (from decision matrix), 6-channel signal trace (interactive Plotly)
-- **Layer 2 — Interpretation & Evidence:** AI clinical interpretation (LLM or template), cumulative SHAP waterfall plots (3 levels) with top-3 feature explanation cards
-- **Layer 3 — Deep Dive:** 6-channel spatial SHAP overlay (expandable), interactive feature ranking bar charts (expandable)
+### Two paths
 
-Three tabs: Clinical Report, Reflex Rules viewer, Debug & Prompts inspector.
+The **cohort view** renders pre-computed results — predictions, confidence, SHAP matrices — and
+runs no inference at all.
 
-### `config.py` (~120 lines)
-All constants and the reflex testing decision matrix:
+The **upload path** runs frozen forward inference on user-supplied de-identified signals, using
+the committed 5-fold ensembles in `pkl/` together with `cascade_src/`. It never trains, refits,
+or recalibrates. The model files are md5-gated against the publication lineage before they are
+unpickled; on a mismatch the upload path is disabled and the cohort view keeps working. Uploads
+are parsed from an in-memory buffer, held only for the session, and never written to disk.
 
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `ZONE_THRESHOLDS` | HIGH ≥ 0.70, MEDIUM ≥ 0.30 | Confidence zone boundaries |
-| `ZONE_COLORS` | `#1A9641` / `#F46D43` / `#D73027` | Traffic-light colors |
-| `SHAP_POS_COLOR` | `#B2182B` | Red — pushes toward predicted class |
-| `SHAP_NEG_COLOR` | `#2166AC` | Blue — pushes against predicted class |
-| `CP_ALPHA` | 0.05 | Conformal prediction significance level |
-| `PDF_DPI` | 300 | PDF export resolution |
-
-Also contains: `pretty()` label formatter (IGG_KAPPA → IgG-κ), `UNIVERSAL_BASELINE` (7 tests), `REFLEX_MATRIX` (15 isotype × zone profiles), `reflex_group()`, `get_reflex()`, `generate_reflex_template()`.
-
-### `data_loader.py` (~220 lines)
-Data I/O with `@st.cache_resource`:
-
-- `load_all_data()` → `(ds, shap_d, feat_dict, master_df)` — merges internal + external into unified DataFrame
-- `get_patient_signal(ds, row)` → `ndarray (6, 300)` signal array
-- `get_patient_shap(shap_d, level, sig_idx, is_ext, n=8)` → top-N `[(feat, value, shap)]` tuples
-- `get_patient_shap_full(...)` → full 399-feature `(names, shap_vals, x_vals)` for spatial overlay
-- `get_human_readable_parts(feat, val, shap, feat_dict)` → `(title, clinical_paragraph, shap_val)` NLP explanation
-- `build_conformal_set(row)` → list of class labels in the prediction set
-- `load_reflex_rules(xlsx_path, uploaded_file)` → `(baseline, matrix, source_label)` with fallback chain
-
-### `plotting.py` (~450 lines)
-Dual-engine visualizations:
-
-| Function | Engine | Purpose |
-|----------|--------|---------|
-| `plotly_signal_faceted()` | Plotly | 6-row interactive signal with hover |
-| `mpl_signal_combined()` | Matplotlib | 6-channel overlay for PDF |
-| `mpl_signal_faceted()` | Matplotlib | 6-row static version |
-| `plotly_shap_waterfall()` | Plotly | Horizontal bar chart with hover |
-| `mpl_shap_waterfall()` | Matplotlib | Static bar chart for PDF |
-| `mpl_shap_waterfall_cumulative()` | Matplotlib | True waterfall: E[f(x)] → cumulative → f(x) |
-| `mpl_shap_6channel_overlay()` | Matplotlib | 399 SHAP values as colored region fills on signal |
-| `render_conformal_set_html()` | HTML | Badge list with zone-colored action indicator |
-
-### `pdf_export.py` (~330 lines)
-Two-page ReportLab PDF:
-
-- **Page 1:** Classification, conformal set, zone, reflex (from matrix with Gel IFE color-coded), signal trace, 3× SHAP waterfalls, AI interpretation (compact)
-- **Page 2:** Universal baseline panel (7 tests), XAI textual explanations per cascade level
-
-### `llm_interpret.py` (~320 lines)
-LLM integration with dual-mode prompts (Research: GT visible / Clinical: GT hidden), API key fallback chain (`st.secrets` → `os.environ` → sidebar), session-state caching, template fallback, publication mode. Model: `claude-sonnet-4-20250514`, max_tokens: 512.
+The pinned block at the bottom of `requirements.txt` is load-bearing for this path — relaxing
+those versions silently changes predictions.
 
 ---
 
 ## Data Files
 
-> **Not included in the repository.** These files contain patient data and model outputs from the cascade training pipeline.
+> **The full-cohort files are not in the repository** — they contain patient data. The `_demo`
+> variants (50 anonymized patients) *are* committed, and are what the default `DEMO_MODE=true`
+> loads. `feature_dictionary.pkl` has no demo variant; both modes share it.
+>
+> The schemas below describe the full files. The demo variants have the same structure with
+> reduced first dimensions.
 
 ### `data/dataset.pkl` (37.4 MB)
 
@@ -251,17 +249,23 @@ dict with 8 keys:
 
   L1_external     dict           External L1 — all 498 samples
     shap_matrix     ndarray (498, 399) float32
+    X_matrix        ndarray (498, 399) float32
+    sample_indices  ndarray (498,) int64
     base_value      ndarray (1,) float64           Same as L1: -0.120
 
   L2_external     dict           External L2 — 223 positives
     shap_matrix     ndarray (223, 399) float32
+    X_matrix        ndarray (223, 399) float32
+    sample_indices  ndarray (223,) int64
     base_value      ndarray (4,) float64           Same as L2
-    threshold_used  float                          0.472 (Youden-optimized L1 threshold)
+    threshold_used  float                          0.4722 (frozen L1 threshold)
 
   L3_external     dict           External L3 — 223 positives
     shap_matrix     ndarray (223, 399) float32
+    X_matrix        ndarray (223, 399) float32
+    sample_indices  ndarray (223,) int64
     base_value      ndarray (1,) float64           Same as L3: -0.762
-    threshold_used  float                          0.472
+    threshold_used  float                          0.4722
 
   metadata        dict
     L1_threshold    float    0.472 (Youden-optimized)
@@ -299,7 +303,7 @@ dict with 4 keys:
 
 ### Confidence Zone Thresholds
 
-Defined in `config.py`, aligned with manuscript Table 3:
+Defined in `config.py`, matching Supplemental Table S8 of the manuscript:
 
 | Zone | Threshold | Internal (OOF, n=2219) | External (n=498) |
 |------|-----------|------------------------|-------------------|
@@ -307,15 +311,14 @@ Defined in `config.py`, aligned with manuscript Table 3:
 | MEDIUM | 0.30–0.70 | n=602, 27.1%, acc=82.9% | n=169, 33.9%, acc=87.6% |
 | LOW | < 0.30 | n=237, 10.7%, acc=45.6% | n=75, 15.1%, acc=46.7% |
 
-The external column is the corrected distribution. An indexing error in the
-figure-generation code passed the full-length L2/L3 probability arrays together with the
-predicted-positive indices, so positive samples were scored with another sample's L2/L3
-confidence. Overall external accuracy (0.8715, 434/498) and every individual prediction
-are unaffected — confidence and zone are computed downstream of the classification and do
-not enter it — so this changes confidence-based triage only, not classification
-performance. The dashboard has always computed the corrected values:
-`data_loader.load_all_data()` and `inference.run_frozen_cascade()` both slice to
+The dashboard recomputes these from the frozen probabilities rather than reading stored zone
+labels. `compute_cascade_confidence` indexes the L2/L3 arrays by **position within `pos_idx`**,
+so `data_loader.load_all_data()` and `inference.run_frozen_cascade()` both slice to
 `l2[pos_idx]` / `l3[pos_idx]` before calling `inference.cohort_confidence()`.
+
+Confidence and zone are computed *downstream* of the classification and never feed back into
+it, so they affect triage routing only — never the predicted class. External accuracy is
+0.8715 (434/498) regardless of how the zones are cut.
 
 ### Compound Confidence Formula
 
@@ -381,22 +384,19 @@ Without an API key, the app uses template-based interpretations — it never cra
 
 ---
 
-## Screenshots
-
-> Enable **📸 Publication Mode** in the sidebar to hide API key UI and deployment artifacts.
-
-High-resolution capture: Chrome DevTools → Device toolbar → Custom device (Width: 1400, Height: 8000, DPR: 4) → Ctrl+Shift+P → "Capture screenshot"
-
----
-
 ## Citation
 
-```
-[Citation to be added after publication]
-```
+The cascade classifier, the analysis code, and the reproducibility package live in the model
+repository and are archived with a persistent identifier:
+
+- Code: https://github.com/ditopcu/CDS-IT-mprotein-cascade
+- Archive: [10.5281/zenodo.19279916](https://doi.org/10.5281/zenodo.19279916)
+
+The manuscript citation will be added once the paper is published.
 
 ---
 
 ## License
 
-[License to be determined]
+Not yet determined. Until a licence is added, no permissions beyond viewing the source are
+granted.
