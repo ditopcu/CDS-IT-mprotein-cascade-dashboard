@@ -22,7 +22,13 @@ FLOWDF_FILE    = RES_DIR  / f"flow_df{_SUFFIX}.pkl"
 SHAP_FILE      = RES_DIR  / f"L4_shap_dense_full{_SUFFIX}.pkl"
 EXTVAL_FILE    = RES_DIR  / f"L4_ext_validation_results{_SUFFIX}.pkl"
 
-# ─── Alicante external cohort (optional; loaded if present) ───────────────
+# ─── Alicante external cohort (opt-in) ────────────────────────────────────
+# Off by default, and deliberately so: these are collaboration patient records that
+# must never surface in a deployment. The files are gitignored and have never been
+# committed, but presence-based loading would still expose them to anyone who happens
+# to have a copy of the folder. Set ALICANTE=true to load them for local validation.
+ALICANTE_ENABLED = os.getenv("ALICANTE", "false").lower() == "true"
+
 # No demo variant — always the same files. See alicante_validation/.
 ALIC_DATASET_FILE = DATA_DIR / "dataset_alicante.pkl"      # X_alic_3d, alic_sample_ids, y_alic_class9
 ALIC_FLOWDF_FILE  = RES_DIR  / "alic_flow_df.pkl"

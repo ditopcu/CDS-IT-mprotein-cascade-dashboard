@@ -203,14 +203,16 @@ def example_signal_df():
     # antiserum lanes = ELP with a small BROAD γ-region reduction (polyclonal immunosubtraction),
     # per-lane factors so difference channels are non-degenerate → a benign 'negative-like' example.
     frac = {"IgG": 0.30, "IgA": 0.10, "IgM": 0.08, "Kappa": 0.20, "Lambda": 0.18}
-    lanes = {"ELP": np.round(elp, 1)}
+    # y is integer-valued: the instrument exports whole-number intensities, so the template
+    # should show the same shape of data a real de-identified export has.
+    lanes = {"ELP": np.rint(elp).astype(int)}
     for name in LANE_ORDER[1:]:
-        lanes[name] = np.round(elp * (1 - frac[name] * gamma), 1)
+        lanes[name] = np.rint(elp * (1 - frac[name] * gamma)).astype(int)
     rows = []
     for name in LANE_ORDER:
         for xi in range(300):
             rows.append({"sample_id": "EXAMPLE_001", "curve_name": name,
-                         "x": int(xi), "y": float(lanes[name][xi])})
+                         "x": int(xi), "y": int(lanes[name][xi])})
     return pd.DataFrame(rows)
 
 

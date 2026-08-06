@@ -2,7 +2,12 @@
 # Install: pip install -r requirements.txt
 
 # ── Core ──
-streamlit>=1.38.0
+# streamlit is pinned, not floated. The layout relies on Streamlit's own DOM
+# (block-container padding, the page header's positioning, tab rendering), so a
+# minor release can silently change how the page lays out — 1.61.1 clipped the top
+# of the intended-use banner. 1.55.0 is the version this UI is developed and
+# visually checked against.
+streamlit==1.55.0
 pandas>=2.0.0
 numpy>=1.24.0
 

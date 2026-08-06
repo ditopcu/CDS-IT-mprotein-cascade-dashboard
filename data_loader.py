@@ -10,6 +10,7 @@ from config import (DATA_DIR, RES_DIR, D9, ZONE_THRESHOLDS,
                     DATASET_FILE, FEATURE_DICT, FLOWDF_FILE,
                     SHAP_FILE, EXTVAL_FILE,
                     ALIC_DATASET_FILE, ALIC_FLOWDF_FILE, ALIC_SHAP_FILE,
+                    ALICANTE_ENABLED,
                     L1_THRESHOLD, CONFORMAL_PROB_THR)
 import inference as inf
 
@@ -82,8 +83,10 @@ def load_all_data():
 
     frames = [df_int, df_ext]
 
-    # ── Alicante cohort (optional — merged only if the files exist) ──────
-    if ALIC_DATASET_FILE.exists() and ALIC_FLOWDF_FILE.exists():
+    # ── Alicante cohort (opt-in via ALICANTE=true, and only if the files exist) ──────
+    # The env gate comes first on purpose: file presence alone must not be enough to pull
+    # collaboration patient records into the app.
+    if ALICANTE_ENABLED and ALIC_DATASET_FILE.exists() and ALIC_FLOWDF_FILE.exists():
         with open(ALIC_DATASET_FILE, 'rb') as f:
             ds_alic = pickle.load(f)
         ds['X_alic_3d']      = ds_alic['X_alic_3d']
@@ -123,9 +126,81 @@ def load_all_data():
     return ds, shap_d, feat_dict, master_df
 
 
+# ── Uploaded samples (this browser session only) ──────────
+USER_SOURCE = 'User'
+
+
+def get_user_upload():
+    """The one upload held for this session, or None.
+
+    Deliberately session-scoped. load_all_data() is @st.cache_resource, so the master
+    DataFrame it returns is one shared object served to every viewer of the deployment;
+    writing uploaded rows into it would show one person's data to everyone else. The
+    upload therefore stays in st.session_state and is merged into a per-session copy.
+    Nothing here is written to disk.
+    """
+    cache = st.session_state.get('_upload_cache') or {}
+    if not cache:
+        return None
+    return next(iter(cache.values()))
+
+
+def get_user_result(row):
+    """The frozen-cascade result dict for an uploaded row (holds its SHAP too)."""
+    entry = get_user_upload()
+    if not entry:
+        return None
+    i = int(row['sig_idx'])
+    results = entry['results']
+    return results[i] if 0 <= i < len(results) else None
+
+
+def attach_user_rows(master_df):
+    """Return master_df with this session's uploaded samples appended as source 'User'.
+
+    Returns a new frame when there is anything to add, so the cached one stays untouched.
+    """
+    entry = get_user_upload()
+    if not entry:
+        return master_df
+
+    ids, results = entry['ids'], entry['results']
+    rows, index = [], []
+    for i, sid in enumerate(ids):
+        r = results[i]
+        l2 = r.get('l2_proba')
+        # An id that already exists in the cohort would make .loc return two rows and the
+        # app would silently render the cohort patient instead. Keep them distinguishable.
+        key = str(sid) if str(sid) not in master_df.index else f"{sid} (upload)"
+        rows.append({
+            'sample_id': str(sid),
+            'pred_class': r['pred_class'],
+            'zone': r['zone'],
+            'confidence': float(r['confidence']),
+            'true_class': None,        # an upload carries no reference interpretation
+            'correct': np.nan,         # so it is neither correct nor incorrect
+            'action': 'User upload',
+            'p_L1': float(r['l1_proba']),
+            'p_L2': float(np.max(l2)) if l2 is not None and np.size(l2) else np.nan,
+            'p_L3': float(r['l3_proba_lambda']),
+            'source': USER_SOURCE,
+            'sig_idx': i,
+            'conformal_set': list(r.get('conformal_set') or []),
+        })
+        index.append(key)
+
+    user_df = pd.DataFrame(rows, index=index).reindex(columns=master_df.columns)
+    return pd.concat([master_df, user_df], axis=0)
+
+
 # ── Helper: get signal array for a patient ────────────────
 def get_patient_signal(ds, row):
     """Return (6, T) signal array."""
+    if row['source'] == USER_SOURCE:
+        # Uploaded signals live in the session, not in the cohort arrays. This branch has
+        # to come first: an uploaded sample_id is a free-text study code, not an integer.
+        entry = get_user_upload()
+        return entry['X'][int(row['sig_idx'])]
     idx_int = int(row.name) if isinstance(row.name, str) else row.name
     if row['source'] == 'External':
         pos = np.where(ds['ext_sample_ids'] == idx_int)[0][0]
