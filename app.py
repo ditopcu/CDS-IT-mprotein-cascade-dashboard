@@ -663,11 +663,6 @@ with tab_patient:
             # ── Deep Dive Expanders ──
             with st.expander("🔬 6-Channel Spatial SHAP Overlay", expanded=False):
                 st.caption("Red = pushes toward class, blue = pushes against.")
-                st.info(
-                    "⚠ **Attributions are REGIONAL, not exact peak coordinates.** The 399 features use "
-                    "**fixed** electrophoretic region windows (β1 / β2 / β2–γ transition / γ) taken from an "
-                    "**averaged** training tracing — not per-sample peak detection. Read the overlay at the "
-                    "level of these zones, not individual x-positions.")
                 for lv, lv_label in [('L1', 'L1: Binary'), ('L2', 'L2: Heavy'), ('L3', 'L3: Light')]:
                     full = get_patient_shap_full(shap_d, lv, sig_idx, shap_suffix)
                     if full is None:
