@@ -386,8 +386,6 @@ def _render_upload_section(feat_dict):
 
     if r.get("shap"):
         with st.expander("Model decision support (SHAP top features)", expanded=False):
-            st.info("⚠ SHAP attributions are **regional** (fixed β1/β2/β2–γ/γ windows from an "
-                    "averaged training tracing), not exact peak coordinates.")
             for lv in ("L1", "L2", "L3"):
                 sd = r["shap"].get(lv)
                 st.markdown(f"**{lv}**")
