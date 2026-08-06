@@ -303,9 +303,19 @@ Defined in `config.py`, aligned with manuscript Table 3:
 
 | Zone | Threshold | Internal (OOF, n=2219) | External (n=498) |
 |------|-----------|------------------------|-------------------|
-| HIGH | ≥ 0.70 | n=1380, 62.2%, acc=96.2% | n=179, 35.9%, acc=97.2% |
-| MEDIUM | 0.30–0.70 | n=602, 27.1%, acc=82.9% | n=167, 33.5%, acc=91.6% |
-| LOW | < 0.30 | n=237, 10.7%, acc=45.6% | n=152, 30.5%, acc=70.4% |
+| HIGH | ≥ 0.70 | n=1380, 62.2%, acc=96.2% | n=254, 51.0%, acc=98.8% |
+| MEDIUM | 0.30–0.70 | n=602, 27.1%, acc=82.9% | n=169, 33.9%, acc=87.6% |
+| LOW | < 0.30 | n=237, 10.7%, acc=45.6% | n=75, 15.1%, acc=46.7% |
+
+The external column is the corrected distribution. An indexing error in the
+figure-generation code passed the full-length L2/L3 probability arrays together with the
+predicted-positive indices, so positive samples were scored with another sample's L2/L3
+confidence. Overall external accuracy (0.8715, 434/498) and every individual prediction
+are unaffected — confidence and zone are computed downstream of the classification and do
+not enter it — so this changes confidence-based triage only, not classification
+performance. The dashboard has always computed the corrected values:
+`data_loader.load_all_data()` and `inference.run_frozen_cascade()` both slice to
+`l2[pos_idx]` / `l3[pos_idx]` before calling `inference.cohort_confidence()`.
 
 ### Compound Confidence Formula
 
