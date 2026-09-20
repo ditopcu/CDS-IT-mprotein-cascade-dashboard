@@ -89,7 +89,6 @@ reproducibility/
 *_old.py
 *v1.py
 utils.py
-debug.py
 only once.py
 abc.ps1
 *.rar
