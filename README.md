@@ -34,6 +34,18 @@ DEMO_MODE=false streamlit run app.py
 variants when on, the full files when off. The full files hold patient data and are never
 committed.
 
+The demo artifacts are not hand-made. `create_demo_dataset.py` derives all five of them from the
+full pickles, selecting one patient per cohort × class × zone slot and anonymizing the IDs. It is
+the only supported way to rebuild them, because it also re-keys the per-level SHAP blocks from
+the full cohort's row index to the demo cohort's row index (see the note under the SHAP schema
+below). Run it with the full dataset present, then run the test suite:
+
+```bash
+pip install -r requirements-dev.txt
+python create_demo_dataset.py
+python -m pytest tests -q
+```
+
 ---
 
 ## Project Structure
@@ -48,7 +60,11 @@ CDS-IT-mprotein-cascade-dashboard/
 ├── plotting.py                        # Plotly (web) + Matplotlib (PDF) visuals
 ├── pdf_export.py                      # ReportLab PDF report
 ├── llm_interpret.py                   # Optional LLM interpretation
+├── create_demo_dataset.py             # Rebuilds every *_demo.pkl from the full pickles
 ├── requirements.txt                   # Python dependencies
+├── requirements-dev.txt               # Test-only pins, deliberately separate
+│
+├── tests/                             # pytest suite over the committed demo artifacts
 │
 ├── cascade_src/                       # Frozen algorithm code, vendored byte-identically
 │   ├── features.py  cascade.py        #   from the model repository — never edited here
@@ -278,6 +294,16 @@ dict with 8 keys:
 ```
 
 **Note on base_value:** L1 and L3 are binary classifiers → scalar base. L2 is 4-class → one base value per class. The dashboard selects the element matching the predicted heavy chain (e.g., IgG → index 0).
+
+**Note on `sample_indices`:** this is the only thing tying a SHAP row to a patient. A SHAP vector
+carries no identity of its own, so an index mistake here is silent: the app renders someone
+else's explanation beside the right signal and nothing looks wrong. L1 covers every sample, while
+L2 and L3 cover a subset, and the two cohorts do not use the same subset rule (internal L2/L3 are
+keyed on the true positives, external on the predicted ones). In the `_demo` files the indices
+are the demo cohort's rows, 0..26 internal and 0..22 external, not the full cohort's, because
+that is what `data_loader` passes as `sig_idx`. `tests/test_shap_signal_alignment.py` checks the
+binding without trusting the index, by re-deriving the 399 features from the signal the app
+renders and comparing them with the stored `X_matrix`.
 
 ### `results/L4_ext_validation_results.pkl` (20 KB)
 
