@@ -282,8 +282,15 @@ def render_conformal_set_html(cp_set, pred_class, zone):
 
 def mpl_shap_waterfall_cumulative(shap_data, title, base_value=None, n=8):
     """
-    True SHAP waterfall: cumulative bars from base_value to f(x).
-    shap_data: list of (feat_name, feat_value, shap_value) tuples
+    Cumulative SHAP bars starting at base_value, over the n highest-|SHAP| features.
+
+    This is a PARTIAL waterfall. The model uses 399 features; only the top n are drawn,
+    so the running total where the bars end is base + sum(top n) — NOT the model output
+    f(x), which would need every contribution. It used to be annotated 'f(x)=…', which
+    read as the model's actual score. The endpoint is labelled as a partial sum instead.
+
+    shap_data: list of (feat_name, feat_value, shap_value) tuples, already truncated to
+        the top features by the caller (data_loader.get_patient_shap / inference._upload_shap).
     base_value: E[f(x)]. If None, uses 0 with a note.
     Returns matplotlib Figure.
     """
@@ -334,8 +341,11 @@ def mpl_shap_waterfall_cumulative(shap_data, title, base_value=None, n=8):
     # Base value line
     ax.axvline(base, color='#CCCCCC', linewidth=1, linestyle=':', zorder=0)
 
-    # Final value annotation
-    ax.annotate(f'f(x)={final_value:.3f}', xy=(final_value, len(feats) - 0.5),
+    # Running-total annotation. Explicitly a partial sum over the drawn features — the
+    # remaining features are not shown and their contributions are not included.
+    n_shown = len(feats)
+    ax.annotate(f'base + Σ top-{n_shown} = {final_value:.3f}',
+                xy=(final_value, n_shown - 0.5),
                 fontsize=8, fontweight='bold', color='#C0392B',
                 ha='left' if final_value >= base else 'right')
 
@@ -359,11 +369,13 @@ def mpl_shap_waterfall_cumulative(shap_data, title, base_value=None, n=8):
     ax.tick_params(left=False, labelsize=7)
     ax.tick_params(axis='x', labelsize=7, colors='#888')
 
-    # Note if base approximated
+    # Truncation note — always shown, because the drawn set is always a subset of the
+    # 399 model features and the endpoint must not be read as the model output.
+    note = f'partial: top {n_shown} features only, not the model output f(x)'
     if not has_base:
-        ax.text(0.99, 0.01, 'base value approximated; relative contributions are exact',
-                transform=ax.transAxes, fontsize=5.5, ha='right', va='bottom',
-                color='#AAAAAA', style='italic')
+        note += '; base value approximated'
+    ax.text(0.99, 0.01, note, transform=ax.transAxes, fontsize=5.5, ha='right',
+            va='bottom', color='#AAAAAA', style='italic')
 
     plt.tight_layout()
     return fig

@@ -1,0 +1,8 @@
+# Test-only dependencies. Deliberately NOT in requirements.txt: the Streamlit Cloud
+# build installs that file, and the four frozen pins there define the published
+# lineage — nothing here may influence what the deploy resolves.
+#
+#   .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+#   .venv\Scripts\python.exe -m pytest tests -q
+pytest>=8
+pypdf>=5          # reads back the generated PDF to assert what it does and does not print

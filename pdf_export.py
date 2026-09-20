@@ -86,7 +86,21 @@ def create_pdf(row, disp_id, cp_set, reflex_text,
                p1, p2, p3,
                fig_sig, fig_s1, fig_s2, fig_s3,
                shap_l1, shap_l2, shap_l3, feat_dict,
-               ai_interpretation=None):
+               ai_interpretation=None,
+               show_ground_truth=True,
+               reflex_matrix=None, universal_baseline=None):
+    """Two-page ReportLab report.
+
+    show_ground_truth: False in Clinical mode. The screen hides the reference class
+        there; the PDF used to print it regardless, so a downloaded report leaked what
+        the screen had withheld. The caller passes the same flag it renders with.
+    reflex_matrix / universal_baseline: the rules the screen is currently showing. The
+        PDF used to read the config defaults unconditionally, so a custom
+        reflex_matrix.xlsx (uploaded, or the committed data/reflex_matrix.xlsx) made the
+        report contradict the screen. None keeps the config defaults.
+    """
+    reflex_matrix = REFLEX_MATRIX if reflex_matrix is None else reflex_matrix
+    universal_baseline = UNIVERSAL_BASELINE if universal_baseline is None else universal_baseline
 
     buf = io.BytesIO()
     W, H = A4
@@ -100,16 +114,22 @@ def create_pdf(row, disp_id, cp_set, reflex_text,
     # ══════════════════════════════════════════════════
 
     # ── Ground truth tag ──
-    # Only when there is one. An uploaded sample carries no reference interpretation, so
-    # true_class is None there; printing it unguarded produced a red "[GROUND TRUTH: None]".
+    # Three distinct states, and they must stay distinct: a withheld reference class is
+    # not the same claim as no reference class at all.
+    #   • printed        — there is one and the caller is in Research mode
+    #   • withheld       — there is one but the caller is in Clinical mode (show_ground_truth
+    #                      False); printing it here leaked what the screen deliberately hid
+    #   • none           — an uploaded sample, which carries no reference interpretation
     _gt = row.get('true_class') if hasattr(row, 'get') else row['true_class']
-    if _gt is not None and pd.notnull(_gt):
-        true_col = '#1A9641' if row['correct'] == 1 else '#D73027'
-        c.setFont('Helvetica-Bold', 9)
-        c.setFillColor(HexColor(true_col))
+    _has_gt = _gt is not None and pd.notnull(_gt)
+    c.setFont('Helvetica-Bold', 9)
+    if _has_gt and show_ground_truth:
+        c.setFillColor(HexColor('#1A9641' if row['correct'] == 1 else '#D73027'))
         c.drawString(M, H - 35, f'[GROUND TRUTH: {pretty(_gt)}]')
+    elif _has_gt:
+        c.setFillColor(HexColor('#666666'))
+        c.drawString(M, H - 35, '[reference interpretation withheld — Clinical mode]')
     else:
-        c.setFont('Helvetica-Bold', 9)
         c.setFillColor(HexColor('#666666'))
         c.drawString(M, H - 35, '[no reference interpretation]')
 
@@ -187,7 +207,7 @@ def create_pdf(row, disp_id, cp_set, reflex_text,
 
     # ── 4. Reflex Test Recommendation (from matrix) ──
     grp = reflex_group(row['pred_class'])
-    matrix_entry = REFLEX_MATRIX.get(grp, {}).get(row['zone'], {})
+    matrix_entry = reflex_matrix.get(grp, {}).get(row['zone'], {})
     gel_ife = matrix_entry.get('gel_ife', 'N/A')
     extra_tests = matrix_entry.get('tests', [])
     guidance_text = matrix_entry.get('guidance', '')
@@ -222,7 +242,7 @@ def create_pdf(row, disp_id, cp_set, reflex_text,
         ry -= 6
         c.setFont('Helvetica-Oblique', 7)
         c.setFillColor(HexColor('#888888'))
-        c.drawString(x2, ry, '\u2192 Universal Baseline Panel (7 tests) \u2014 see page 2')
+        c.drawString(x2, ry, f'\u2192 Universal Baseline Panel ({len(universal_baseline)} tests) \u2014 see page 2')
 
     # ── 5. Signal Trace ──
     SIG_TOP = ROW2_Y - 75
@@ -278,7 +298,7 @@ def create_pdf(row, disp_id, cp_set, reflex_text,
         c.line(M, y, W - M, y)
         y -= 14
 
-        for test, rationale in UNIVERSAL_BASELINE:
+        for test, rationale in universal_baseline:
             c.setFillColor(HexColor('#333333'))
             c.setFont('Helvetica-Bold', 8)
             c.drawString(M + 4, y, f'\u2022 {test}')

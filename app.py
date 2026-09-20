@@ -696,6 +696,10 @@ with tab_patient:
                 fig_sig=fig_sig_pdf, fig_s1=fig_s1_pdf, fig_s2=fig_s2_pdf, fig_s3=fig_s3_pdf,
                 shap_l1=shap_l1, shap_l2=shap_l2, shap_l3=shap_l3, feat_dict=feat_dict,
                 ai_interpretation=interp_text if include_ai_in_pdf else None,
+                # The PDF must disclose exactly what this screen discloses: the reference
+                # class only in Research mode, and the reflex rules actually in force.
+                show_ground_truth=(llm_mode == MODE_RESEARCH),
+                reflex_matrix=_matrix, universal_baseline=_baseline,
             )
             st.download_button("📥 Download PDF Report", data=pdf_buf,
                                file_name=f"CDS_Report_{disp_id}.pdf", mime="application/pdf", type="primary")
